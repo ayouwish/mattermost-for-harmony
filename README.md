@@ -97,4 +97,4 @@ hvigorw assembleApp -p buildMode=debug
 - `docs/SETUP.md` — 新环境搭建指南（clone 后从零编译部署）
 - `PROGRESS.md` — 功能构建进展与已知问题
 - `PUSH_KIT_SETUP.md` — 华为推送服务接入清单
-- 服务端推送对接见独立仓库 [mattermost-push-proxy-huawei](https://github.com/你的用户名/mattermost-push-proxy-huawei)（mattermost-push-proxy 的华为 Push Kit provider）
+- 服务端推送对接见独立仓库 [mattermost-push-proxy-huawei](https://github.com/ayouwish/mattermost-push-proxy-huawei)（mattermost-push-proxy 的华为 Push Kit provider）
