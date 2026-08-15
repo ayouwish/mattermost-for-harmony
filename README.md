@@ -94,5 +94,6 @@ hvigorw assembleApp -p buildMode=debug
 
 ## 相关文档
 
+- `docs/SETUP.md` — 新环境搭建指南（clone 后从零编译部署）
 - `PROGRESS.md` — 功能构建进展与已知问题
 - `PUSH_KIT_SETUP.md` — 华为推送服务接入清单
