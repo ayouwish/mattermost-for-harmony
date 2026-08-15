@@ -65,7 +65,7 @@
 ## 6. 服务端对接（超出客户端范围，但需要知晓）
 
 - [ ] Mattermost 服务器需支持华为推送渠道。标准 Mattermost 推送走 FCM/APNs，华为通道需：
-  - **推荐方案（已提供完整实现）**：`push-proxy-huawei/` 目录——mattermost-push-proxy 的华为 provider（Go），客户端上报 `device_id = "huawei:<token>"` 后自动路由。部署步骤见该目录 README
+  - **推荐方案（已提供完整实现）**：独立仓库 `mattermost-push-proxy-huawei`——mattermost-push-proxy 的华为 provider（Go），客户端上报 `device_id = "huawei:<token>"` 后自动路由。部署步骤见该仓库 README
   - 方式 B：自建桥接服务，将 Mattermost 通知转发到华为 Push Kit（未实现）
 - [ ] 客户端获取到 Push Token 后通过 `PushTurboModule.getToken()` 暴露给 JS，JS 侧登录后上报到 Mattermost 服务器（`client.updateDeviceId("huawei:<token>")` 已实现）
 
