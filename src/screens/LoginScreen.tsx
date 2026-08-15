@@ -16,6 +16,7 @@ import {
 import {createClient, type MattermostClient} from '../api/client';
 import {persistentStorage, STORAGE_KEYS} from '../api/persistent-storage';
 import {setCurrentUserId, requestNotificationPermission} from '../api/notifications';
+import {getPushToken} from '../api/push-token';
 import {theme, changeOpacity} from '../theme/utils';
 
 interface Props {
@@ -54,6 +55,14 @@ export default function LoginScreen({onLogin}: Props) {
             setCurrentUserId(me.id);
             requestNotificationPermission();
             client.connectWebSocket().catch(() => {});
+
+            // Re-report the push device id (token may have rotated since last login)
+            getPushToken().then((token) => {
+              if (token) {
+                client.updateDeviceId(`huawei:${token}`).catch(() => {});
+              }
+            });
+
             onLogin(client);
             return;
           }
@@ -115,6 +124,17 @@ export default function LoginScreen({onLogin}: Props) {
         client.connectWebSocket().catch((wsErr) => {
           console.log('[Login] WebSocket connection failed:', wsErr);
         });
+
+        // Report the Huawei Push Kit token so the server can route push
+        // notifications to this device (huawei:<token> → push proxy Huawei channel).
+        getPushToken().then((token) => {
+          if (token) {
+            client.updateDeviceId(`huawei:${token}`).catch(() => {
+              console.log('[Push] updateDeviceId failed');
+            });
+          }
+        });
+
         onLogin(client);
       }
     } catch (error: any) {

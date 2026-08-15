@@ -1,0 +1,40 @@
+{
+    "ListenAddress": ":8066",
+    "ThrottlePerSec": 300,
+    "ThrottleMemoryStoreSize": 50000,
+    "ThrottleVaryByHeader": "X-Forwarded-For",
+    "EnableMetrics": false,
+    "SendTimeoutSec": 30,
+    "RetryTimeoutSec": 8,
+    "ApplePushSettings": [
+        {
+            "Type": "apple",
+            "ApplePushUseDevelopment": false,
+            "ApplePushCertPrivate": "",
+            "ApplePushCertPassword": "",
+            "ApplePushTopic": "com.mattermost.Mattermost",
+            "AppleAuthKeyFile": "",
+            "AppleAuthKeyID": "",
+            "AppleTeamID": ""
+        }
+    ],
+    "AndroidPushSettings": [
+        {
+            "Type": "android",
+            "AndroidApiKey": "",
+            "ServiceFileLocation": ""
+        }
+    ],
+    "HuaweiPushSettings": [
+        {
+            "Type": "huawei",
+            "AppId": "你的_AGC_AppID",
+            "AppSecret": "你的_AGC_AppSecret"
+        }
+    ],
+    "EnableConsoleLog": true,
+    "EnableFileLog": false,
+    "LogFileLocation": "",
+    "LogFormat": "plain",
+    "LogLevel": "info"
+}

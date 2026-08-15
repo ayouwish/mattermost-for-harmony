@@ -246,6 +246,20 @@ export class MattermostClient {
     return res.data as UserProfile;
   }
 
+  /**
+   * Update the push device id for the current session so the Mattermost
+   * server routes push notifications to this device. Use the
+   * `huawei:<token>` format to target the Huawei Push Kit channel handled
+   * by the push proxy.
+   */
+  async updateDeviceId(deviceId: string): Promise<void> {
+    await this.http.put(
+      `${this.userRoute('me')}/sessions/device`,
+      {device_id: deviceId},
+      this.authHeaders,
+    );
+  }
+
   async getUser(userId: string): Promise<UserProfile> {
     const res = await this.http.get(
       this.userRoute(userId),
