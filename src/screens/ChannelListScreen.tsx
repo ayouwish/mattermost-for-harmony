@@ -37,6 +37,7 @@ interface Props {
   onLogout: () => void;
   onSearch?: () => void;
   onThreads?: () => void;
+  onSaved?: () => void;
   // When false, hide the built-in header (identity + ＋ + logout). Used by the
   // wide-screen layout where these actions live in the full-width TopBar.
   showHeader?: boolean;
@@ -56,6 +57,7 @@ export default function ChannelListScreen({
   onLogout,
   onSearch,
   onThreads,
+  onSaved,
   showHeader = true,
 }: Props) {
   const imageHeaders = useMemo(() => client.getImageRequestHeaders(), [client]);
@@ -495,6 +497,18 @@ export default function ChannelListScreen({
           <View style={styles.threadsEntryTextWrap}>
             <Text style={styles.threadsEntryTitle}>Threads</Text>
             <Text style={styles.threadsEntrySub}>Your followed discussions</Text>
+          </View>
+          <Text style={styles.threadsEntryArrow}>›</Text>
+        </TouchableOpacity>
+      )}
+
+      {/* Saved messages entry */}
+      {onSaved && (
+        <TouchableOpacity style={styles.threadsEntry} onPress={onSaved} activeOpacity={0.7}>
+          <Text style={styles.threadsEntryIcon}>🔖</Text>
+          <View style={styles.threadsEntryTextWrap}>
+            <Text style={styles.threadsEntryTitle}>Saved messages</Text>
+            <Text style={styles.threadsEntrySub}>Messages you flagged for later</Text>
           </View>
           <Text style={styles.threadsEntryArrow}>›</Text>
         </TouchableOpacity>

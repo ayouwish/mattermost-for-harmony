@@ -39,6 +39,7 @@ import type {
 } from './types';
 import {cache} from './cache';
 import * as notifications from './notifications';
+import {fetchImageAsDataUri} from '../utils/imageDataUri';
 
 export class MattermostClient {
   private http: JSAPIClient;
@@ -285,11 +286,12 @@ export class MattermostClient {
     if (teamId) {
       body.team_id = teamId;
     }
-    const url = teamId
-      ? `${this.teamsRoute()}/${teamId}/users/search`
-      : `${this.usersRoute()}/search`;
+    // Mattermost user search is always POST /api/v4/users/search (team_id in
+    // the body scopes the search); the team-scoped URL path does NOT exist.
+    const url = `${this.usersRoute()}/search`;
     const res = await this.http.post(url, body, this.authHeaders);
-    return res.data as UserProfile[];
+    const data = res.data;
+    return Array.isArray(data) ? (data as UserProfile[]) : [];
   }
 
   async searchUsersInTeam(term: string): Promise<UserProfile[]> {
@@ -671,7 +673,22 @@ export class MattermostClient {
   // ── Files ──
 
   async getFileUrl(fileId: string): Promise<string> {
-    return `${this.urlVersion}/files/${fileId}${this.token ? `?${HEADER_AUTH}=${HEADER_BEARER} ${this.token}` : ''}`;
+    return `${this.urlVersion}/files/${fileId}`;
+  }
+
+  /**
+   * Data URI (base64) for rendering a file as an image. RNOH's <Image>
+   * pipeline ignores source.headers and Mattermost rejects session tokens via
+   * query params — so we download with an authenticated fetch and render the
+   * data URI (no auth needed by the URI itself).
+   * Returns null on failure (e.g. HTTP 404/401 for deleted/private files).
+   */
+  async getFileImageDataUri(fileId: string, kind: 'thumbnail' | 'image'): Promise<string | null> {
+    // On this server only `/api/v4/files/{id}` streams the file bytes (with
+    // auth → 200 + binary). The `/image` / `/thumbnail` preview endpoints
+    // return 404, so we always fetch the full file.
+    const url = `${this.urlVersion}/files/${fileId}`;
+    return fetchImageAsDataUri(url, this.getImageRequestHeaders());
   }
 
   async uploadFile(
@@ -697,8 +714,8 @@ export class MattermostClient {
   }
 
   getProfileImageUrl(userId: string, lastUpdate: number = 0): string {
-    // Plain URL — auth is passed via request headers (query-param auth is
-    // rejected by Mattermost for session tokens).
+    // Plain URL — auth is applied by Avatar via an authenticated fetch
+    // (data-URI approach); RNOH's Image pipeline can't send headers.
     return `${this.userRoute(userId)}/image?_=${lastUpdate}`;
   }
 

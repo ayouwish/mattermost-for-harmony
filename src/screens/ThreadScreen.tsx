@@ -6,6 +6,7 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
@@ -18,11 +19,12 @@ import {
 } from 'react-native';
 import {type MattermostClient} from '../api/client';
 import {cache} from '../api/cache';
-import type {Channel, Post, PostList, UserProfile} from '../api/types';
+import type {Channel, FileInfo, Post, PostEmbed, PostList, UserProfile} from '../api/types';
 import {WebSocketEvents} from '../api/types';
-import {Avatar, Markdown} from '../components';
+import {Avatar, FileAttachments, InlineImagePreviews, LinkPreview, Markdown} from '../components';
 import {formatTime} from '../utils/dateFormat';
 import {theme, changeOpacity} from '../theme/utils';
+import {openInBrowser} from '../utils/openLink';
 
 interface Props {
   client: MattermostClient;
@@ -45,6 +47,8 @@ interface DisplayReply {
   isOwn: boolean;
   isEdited: boolean;
   reactions: Array<{emoji: string; count: number; mine: boolean}>;
+  files: FileInfo[];
+  embeds: PostEmbed[];
 }
 
 export default function ThreadScreen({client, channel, rootPost, onClose, onMenu, inPane = false}: Props) {
@@ -210,6 +214,8 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
         isOwn: p.user_id === currentUserId,
         isEdited: p.edit_at > 0 && p.edit_at !== p.create_at,
         reactions,
+        files: p.metadata?.files || [],
+        embeds: p.metadata?.embeds || [],
       };
     },
     [currentUserId],
@@ -299,12 +305,20 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
       }
 
       // Ensure the root post author's profile is available (cache-first).
-      if (rootPost.user_id && !cache.getUser(rootPost.user_id)) {
-        try {
-          const rootUser = await client.getUser(rootPost.user_id);
-          cache.setUser(rootUser);
-          setUserProfiles((prev) => ({...prev, [rootUser.id]: rootUser}));
-        } catch {}
+      // Always seed it into userProfiles so the header never shows "unknown",
+      // even when the profile is already cached (the old code only set state
+      // when it had to fetch, leaving a gap for cached profiles).
+      if (rootPost.user_id) {
+        const cachedRoot = cache.getUser(rootPost.user_id);
+        if (cachedRoot) {
+          setUserProfiles((prev) => (prev[cachedRoot.id] ? prev : {...prev, [cachedRoot.id]: cachedRoot}));
+        } else {
+          try {
+            const rootUser = await client.getUser(rootPost.user_id);
+            cache.setUser(rootUser);
+            setUserProfiles((prev) => ({...prev, [rootUser.id]: rootUser}));
+          } catch {}
+        }
       }
 
       // Show cached replies instantly, then refresh in background.
@@ -362,6 +376,40 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
     loadThread();
   }, [loadThread]);
 
+  // Seed known profiles from cache immediately so the root author header never
+  // renders as "unknown" while loadThread's async profile fetch is in flight.
+  useEffect(() => {
+    const seed: Record<string, UserProfile> = {};
+    if (rootPost.user_id) {
+      const cachedRoot = cache.getUser(rootPost.user_id);
+      if (cachedRoot) seed[cachedRoot.id] = cachedRoot;
+    }
+    const tid = client.getTeamId() || '';
+    const channelPosts = cache.getPosts(tid, channel.id)?.posts;
+    if (channelPosts) {
+      for (const p of Object.values(channelPosts)) {
+        if ((p.id === rootPost.id || p.root_id === rootPost.id) && p.user_id && !seed[p.user_id]) {
+          const u = cache.getUser(p.user_id);
+          if (u) seed[u.id] = u;
+        }
+      }
+    }
+    if (Object.keys(seed).length > 0) {
+      setUserProfiles((prev) => {
+        let changed = false;
+        const merged = {...prev};
+        for (const id of Object.keys(seed)) {
+          if (!merged[id]) {
+            merged[id] = seed[id];
+            changed = true;
+          }
+        }
+        return changed ? merged : prev;
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rootPost.id]);
+
   // Listen for new posts in this thread via WebSocket
   useEffect(() => {
     const unsub = client.onWsEvent(WebSocketEvents.POSTED, (msg) => {
@@ -418,19 +466,36 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
         isOwn: true,
         isEdited: false,
         reactions: [],
+        files: [],
+        embeds: [],
       },
     ]);
 
     try {
-      await client.createPost({
+      const created = await client.createPost({
         channel_id: channel.id,
         message: msgContent,
         root_id: rootPost.id,
       });
-      // Auto-follow via onContentSizeChange; no extra timer here.
+      // Replace the optimistic row with the server-created post so the reply
+      // is visible immediately even if the WS posted event is delayed. addReply
+      // dedups by id, so a later WS event is harmless.
+      if (created?.id) {
+        const dr = toDisplayReply(created, userProfiles);
+        setReplies((prev) => {
+          const filtered = prev.filter((p) => p.id !== tempId);
+          if (filtered.some((p) => p.id === dr.id)) {
+            return filtered.map((p) => (p.id === dr.id ? dr : p));
+          }
+          return [...filtered, dr];
+        });
+      } else {
+        setReplies((prev) => prev.filter((p) => p.id !== tempId));
+      }
     } catch (err: any) {
       setReplies((prev) => prev.filter((p) => p.id !== tempId));
       setMessage(msgContent);
+      Alert.alert('Reply failed', err.message || 'Failed to send reply');
     } finally {
       setSending(false);
     }
@@ -455,6 +520,13 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
             </Text>
           </View>
           <Markdown text={item.message} />
+          {item.files.length > 0 && <FileAttachments client={client} files={item.files} />}
+          <LinkPreview
+            embeds={item.embeds}
+            serverUrl={client.getServerUrl()}
+            onOpen={(url) => openInBrowser(url)}
+          />
+          <InlineImagePreviews message={item.message} onOpen={(url) => openInBrowser(url)} />
         </View>
       </View>
     );
@@ -548,6 +620,15 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
                   </Text>
                 </View>
                 <Markdown text={rootPost.message} style={styles.rootMarkdown} />
+                {(rootPost.metadata?.files || []).length > 0 && (
+                  <FileAttachments client={client} files={rootPost.metadata?.files || []} />
+                )}
+                <LinkPreview
+                  embeds={rootPost.metadata?.embeds || []}
+                  serverUrl={client.getServerUrl()}
+                  onOpen={(url) => openInBrowser(url)}
+                />
+                <InlineImagePreviews message={rootPost.message} onOpen={(url) => openInBrowser(url)} />
               </View>
             </View>
             <View style={styles.threadDivider}>

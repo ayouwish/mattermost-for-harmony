@@ -2,6 +2,10 @@ import { RNPackageContext, RNPackage, UITurboModuleContext, TurboModule } from '
 import { PersistentStorageTurboModule } from './PersistentStorageTurboModule';
 import { NotificationsTurboModule } from './NotificationsTurboModule';
 import { PushTurboModule } from './PushTurboModule';
+import { ImageCacheTurboModule } from './ImageCacheTurboModule';
+import { SystemOpenTurboModule } from './SystemOpenTurboModule';
+import { ReminderTurboModule } from './ReminderTurboModule';
+import { ClipboardTurboModule } from './ClipboardTurboModule';
 
 class MattermostPackage extends RNPackage {
   getUITurboModuleFactoryByNameMap(): Map<string, (ctx: UITurboModuleContext) => TurboModule | null> {
@@ -14,6 +18,18 @@ class MattermostPackage extends RNPackage {
       }],
       [PushTurboModule.NAME, (ctx: UITurboModuleContext) => {
         return new PushTurboModule(ctx);
+      }],
+      [ImageCacheTurboModule.NAME, (ctx: UITurboModuleContext) => {
+        return new ImageCacheTurboModule(ctx);
+      }],
+      [SystemOpenTurboModule.NAME, (ctx: UITurboModuleContext) => {
+        return new SystemOpenTurboModule(ctx);
+      }],
+      [ReminderTurboModule.NAME, (ctx: UITurboModuleContext) => {
+        return new ReminderTurboModule(ctx);
+      }],
+      [ClipboardTurboModule.NAME, (ctx: UITurboModuleContext) => {
+        return new ClipboardTurboModule(ctx);
       }],
     ]);
   }

@@ -65,8 +65,8 @@
 | # | 功能 | 状态 | 验证方法 | 备注 |
 |---|------|------|----------|------|
 | 5.1 | 文件上传 API | ✅ | client.uploadFile 已实现（multipart FormData） | API 层完成 |
-| 5.2 | 图片附件渲染 | ✅ | FileAttachments 组件渲染缩略图网格 | 组件完成，但聊天中未接入渲染 |
-| 5.3 | 文件卡片渲染 | ✅ | FileAttachments 组件渲染文件类型图标+大小 | 组件完成，但聊天中未接入渲染 |
+| 5.2 | 图片附件渲染 | ✅ | FileAttachments 组件渲染缩略图网格 | 已接入聊天与线程渲染；鉴权改用 header（query param 被拒） |
+| 5.3 | 文件卡片渲染 | ✅ | FileAttachments 组件渲染文件类型图标+大小 | 已接入聊天与线程渲染 |
 | 5.4 | 上传 UI（选择文件按钮） | 🔲 | — | RNOH 无原生图片选择器模块 |
 | 5.5 | 图片全屏查看器 | 🔲 | — | |
 
@@ -260,7 +260,58 @@
 1. **连接状态指示器**（模块 6.7）— 用户需要知道 WebSocket 是否在线
 2. **消息草稿保存**（模块 3.8）— 切换频道不丢失输入
 3. **用户资料页**（模块 8.4）— 点击头像查看用户详情
-4. **文件附件在聊天中渲染**（模块 5.2/5.3）— FileAttachments 组件已写好但未接入
-5. **消息固定（Pin）从聊天中操作**（模块 3.10）— 目前只能查看，不能从聊天固定
-6. **频道管理**（模块 2.5/2.8）— 创建频道、添加/移除成员
-7. **推送服务端对接**（模块 9.3）— Mattermost 服务器支持华为推送渠道后，息屏后台可收通知
+4. **消息固定（Pin）从聊天中操作**（模块 3.10） — 目前只能查看，不能从聊天固定
+5. **频道管理**（模块 2.5/2.8）— 创建频道、添加/移除成员
+6. **推送服务端对接**（模块 9.3）— Mattermost 服务器支持华为推送渠道后，息屏后台可收通知
+
+---
+
+## 六、近期新增功能（2026-08-18 ~ 08-21）
+
+### 多媒体
+| 功能 | 状态 | 说明 |
+|---|---|---|
+| 图片附件/头像显示 | ✅ | RNOH Image 不支持 headers，改为鉴权 fetch → base64 data URI 渲染 |
+| 图片磁盘持久缓存 | ✅ | `ImageCacheTurboModule`（沙箱 cache 目录，500 文件 LRU）；内存→磁盘→网络三级缓存，杀进程重启不重下 |
+| 链接预览卡片 | ✅ | opengraph/permalink/message_attachment 三种 embed 卡片 |
+| 正文内联图片 | ✅ | 裸图片 URL 内联渲染 |
+| 视频/音频卡片 | 🔶 | 卡片展示 + 占位提示（内嵌播放器待 Phase 2） |
+
+### 推送
+| 功能 | 状态 | 说明 |
+|---|---|---|
+| Push Kit token 获取 | ✅ | `[PUSH_TOKEN]` 日志可查 |
+| 通知点击跳转定位 | ✅ | push payload 解析 channel_id/post_id → 打开频道并滚动高亮到消息 |
+| 系统日历 Remind | 🔶 | `calendarManager.editEvent`+权限申请；真机验证中 |
+
+### 消息交互
+| 功能 | 状态 | 说明 |
+|---|---|---|
+| 点击消息回复到 thread | ✅ | 点击进入内联回复模式，root_id 指向 thread 根 |
+| 长按完整菜单 | ✅ | Reply/Thread/Forward/Copy/Link/React/Save/Remind/Unfollow/Unread/Pin/Edit/Delete |
+| 大屏横向右键菜单 / 小屏底部 sheet | ✅ | 浅色主题，横排 ScrollView |
+| Saved messages 视图 | ✅ | `flagged_post` preference 同步（含桌面端），侧边栏 🔖 入口 |
+| Forward（频道+DM） | ✅ | 频道选择器（缓存优先秒开） |
+| @提及自动补全 | 🔶 | 服务端 `searchUsers` 搜索；真机验证中 |
+| 粘贴板复制 | 🔶 | `ClipboardTurboModule`（@ohos.pasteboard）；真机验证中 |
+
+### 性能修复
+| 修复 | 状态 | 说明 |
+|---|---|---|
+| 上拉历史分页跳顶 | ✅ | 高度差恢复 + 翻页锁 + 锚点索引 |
+| 消息排序错乱 | ✅ | `sortPostsByTime` 统一排序去重 |
+| 底部触达拉取新消息 | ✅ | `onEndReached` + 防抖冷却 |
+| 键盘遮挡输入栏 | ✅ | keyboardHeight 手动抬升 |
+| reply 状态跨频道泄漏 | ✅ | 切频道重置 replyTo/editing 等 |
+| typing 只显示他人 | ✅ | 过滤 currentUserId |
+
+---
+
+## 七、待处理问题（性能 review 前快照）
+
+| # | 问题 | 状态 |
+|---|------|------|
+| P1 | 粘贴板写入未生效（hilog 无 MattermostClipboard 日志，疑似 TurboModule 未被调用） | ⚠️ 排查中 |
+| P2 | @提及补全真机表现待确认 | ⚠️ 待验证 |
+| P3 | 系统日历 Remind 权限弹窗/编辑器待确认 | ⚠️ 待验证 |
+| P4 | 整体性能差（切换频道/滚动卡顿）待系统性 review | 🔲 下一步 |

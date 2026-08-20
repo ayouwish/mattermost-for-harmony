@@ -22,8 +22,23 @@ interface PushPayload {
   title?: string;
   message?: string;
   body?: string;
+  channel_id?: string;
+  post_id?: string;
+  root_id?: string;
   notification?: PushNotificationInner;
   payload?: PushWrappedPayload;
+}
+
+interface PushDeepLinkData {
+  channel_id?: string;
+  post_id?: string;
+  root_id?: string;
+}
+
+interface PushDeepLinkTarget {
+  channelId: string;
+  postId: string;
+  rootId: string;
 }
 
 /**
@@ -31,6 +46,10 @@ interface PushPayload {
  */
 export class PushTokenHolder {
   static token: string = '';
+  // Deep-link target of the most recently received push: which channel + post
+  // to open. JS reads (and clears) this via PushTurboModule to navigate the
+  // user to the tapped notification's message.
+  static pushTarget: PushDeepLinkTarget | null = null;
 }
 
 export default class EntryAbility extends RNAbility {
@@ -59,9 +78,9 @@ export default class EntryAbility extends RNAbility {
     try {
       pushService.getToken().then((token: string) => {
         PushTokenHolder.token = token;
-        hilog.info(DOMAIN, TAG, 'getToken succeeded');
+        hilog.info(DOMAIN, TAG, '[PUSH_TOKEN] getToken succeeded, token=%{public}s', token);
       }).catch((err: BusinessError) => {
-        hilog.error(DOMAIN, TAG, 'getToken failed: %{public}d %{public}s', err.code, err.message);
+        hilog.error(DOMAIN, TAG, '[PUSH_TOKEN] getToken failed: %{public}d %{public}s', err.code, err.message);
       });
     } catch (err) {
       let e = err as BusinessError;
@@ -101,6 +120,28 @@ export default class EntryAbility extends RNAbility {
       const wrappedNotif = wrapped?.notification;
       const title: string = parsed?.title || notif?.title || wrappedNotif?.title || 'Mattermost';
       const text: string = parsed?.message || parsed?.body || wrapped?.message || wrappedNotif?.body || 'New message';
+
+      // Try to extract channel_id / post_id for deep-linking to the message.
+      // They may be at the top level, or embedded inside the "data" JSON string
+      // (the Huawei push provider sends the Mattermost payload as a stringified
+      // JSON under `data`).
+      let channelId: string = parsed?.channel_id || '';
+      let postId: string = parsed?.post_id || '';
+      let rootId: string = parsed?.root_id || '';
+      if ((!channelId || (!postId && rootId === '')) && typeof parsed?.body === 'string') {
+        try {
+          const inner = JSON.parse(parsed.body) as PushDeepLinkData;
+          channelId = channelId || inner?.channel_id || '';
+          postId = postId || inner?.post_id || '';
+          rootId = rootId || inner?.root_id || '';
+        } catch (e) {
+          // not JSON — ignore
+        }
+      }
+
+      if (channelId && postId) {
+        PushTokenHolder.pushTarget = { channelId, postId, rootId };
+      }
 
       const request: notificationManager.NotificationRequest = {
         id: Date.now() % 1000,

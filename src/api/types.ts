@@ -20,6 +20,8 @@ export interface UserProfile {
     manualTimezone: string;
   };
   last_picture_update: number;
+  // Present on bot accounts (optional — not always in the payload).
+  is_bot?: boolean;
 }
 
 export interface Team {
@@ -95,11 +97,37 @@ export interface Post {
   pending_post_id: string;
   reply_count: number;
   metadata?: {
-    embeds?: any[];
+    embeds?: PostEmbed[];
     emojis?: any[];
     files?: FileInfo[];
     images?: Record<string, any>;
     reactions?: Reaction[];
+  };
+}
+
+/** OpenGraph / permalink / message-attachment preview data attached to a post. */
+export interface PostEmbed {
+  type: string;
+  url: string;
+  data?: {
+    url?: string;
+    title?: string;
+    description?: string;
+    site_name?: string;
+    image_url?: string;
+    // permalink embeds
+    post_id?: string;
+    team_id?: string;
+    channel_id?: string;
+    channel_display_name?: string;
+    channel_name?: string;
+    channel_type?: string;
+    post_created_by?: string;
+    post_create_at?: number;
+    // message_attachment embeds
+    text?: string;
+    fallback?: string;
+    message?: string;
   };
 }
 

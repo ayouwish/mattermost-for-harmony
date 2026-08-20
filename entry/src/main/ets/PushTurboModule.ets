@@ -27,6 +27,17 @@ export class PushTurboModule extends TurboModule {
     return PushTokenHolder.token || '';
   }
 
+  /**
+   * Returns the deep-link target (channel_id/post_id/root_id) of the most
+   * recently received push, and clears it so it isn't replayed. Used by JS to
+   * navigate the user to the tapped notification's message.
+   */
+  async consumePushTarget(): Promise<string> {
+    const target = PushTokenHolder.pushTarget;
+    PushTokenHolder.pushTarget = null;
+    return target ? JSON.stringify(target) : '';
+  }
+
   __onDestroy__() {
     super.__onDestroy__();
   }

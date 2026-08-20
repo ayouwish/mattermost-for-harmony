@@ -20,6 +20,7 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -27,14 +28,17 @@ import {
   View,
 } from 'react-native';
 import {type MattermostClient} from '../api/client';
-import type {Channel, Post, PostList, UserProfile} from '../api/types';
+import type {Channel, FileInfo, Post, PostEmbed, PostList, UserProfile} from '../api/types';
 import {WebSocketEvents} from '../api/types';
-import {Avatar, Markdown} from '../components';
+import {Avatar, FileAttachments, InlineImagePreviews, LinkPreview, Markdown} from '../components';
 import {formatTime, formatDateSeparator} from '../utils/dateFormat';
 import {cache} from '../api/cache';
 import {theme, changeOpacity} from '../theme/utils';
 import {setActiveChannel, setCurrentUserId} from '../api/notifications';
 import {persistentStorage} from '../api/persistent-storage';
+import {openInBrowser} from '../utils/openLink';
+import {openCalendarReminder} from '../utils/reminder';
+import {copyToClipboard} from '../utils/clipboard';
 
 interface Props {
   client: MattermostClient;
@@ -46,6 +50,9 @@ interface Props {
   // True when rendered as the right pane below the full-width TopBar (wide
   // layout). In pane mode the header no longer clears the status bar.
   inPane?: boolean;
+  // When set (e.g. from a tapped push notification), scroll to this post and
+  // briefly highlight it once the channel's messages are loaded.
+  focusPostId?: string;
 }
 
 interface DisplayPost {
@@ -63,7 +70,8 @@ interface DisplayPost {
   isPinned: boolean;
   replyCount: number;
   reactions: Array<{emoji: string; count: number; mine: boolean}>;
-  fileIds: string[];
+  files: FileInfo[];
+  embeds: PostEmbed[];
   props: Record<string, any>;
   pendingPostId?: string;
   lastReplyPreview?: DisplayPost | null;
@@ -90,15 +98,42 @@ function hasOlderPosts(postList: PostList, shownCount: number): boolean {
   return total > shownCount || postList.has_next === true;
 }
 
-export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu, onOpenThread, inPane = false}: Props) {
+export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu, onOpenThread, inPane = false, focusPostId}: Props) {
   const [posts, setPosts] = useState<DisplayPost[]>([]);
+  // Post id currently highlighted (e.g. navigated here from a push notification).
+  const [highlightedPostId, setHighlightedPostId] = useState<string | null>(null);
   const [message, setMessage] = useState('');
+  // ── At-mention autocomplete state ──
+  // Members of the current channel (with profiles) available for @ mention.
+  const [mentionMembers, setMentionMembers] = useState<UserProfile[]>([]);
+  // Current @-mention suggestion results (already matched to the query).
+  const [mentionResults, setMentionResults] = useState<UserProfile[]>([]);
+  // The partial query typed after the active @ (e.g. "jo" in "@jo").
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  // Array offset where the active @ starts in `message` (for replacement).
+  const mentionStartRef = useRef(0);
+  // Keyboard height for manually lifting the input bar above the keyboard
+  // (KeyboardAvoidingView is unreliable on RNOH/tablet).
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  // Debounce + query snapshot for the @-mention server search.
+  const mentionSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mentionQueryRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editingPostId, setEditingPostId] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<DisplayPost | null>(null);
   const [actionPost, setActionPost] = useState<DisplayPost | null>(null);
+  // Post being forwarded, shown in the channel-picker modal.
+  const [forwardPost, setForwardPost] = useState<DisplayPost | null>(null);
+  // Channels available for forwarding to.
+  const [forwardChannels, setForwardChannels] = useState<Channel[]>([]);
+  const [forwardLoading, setForwardLoading] = useState(false);
+  const [forwardSending, setForwardSending] = useState(false);
+  // Anchor for the right-click-style action menu (large screens). Captured from
+  // the long-press gesture so the menu appears near the pressed message instead
+  // of a full-width centered overlay.
+  const [actionPos, setActionPos] = useState<{x: number; y: number} | null>(null);
   const [emojiPickerPost, setEmojiPickerPost] = useState<DisplayPost | null>(null);
   const [typingUsers, setTypingUsers] = useState<Map<string, TypingUser>>(new Map());
   const [userProfiles, setUserProfiles] = useState<Record<string, UserProfile>>({});
@@ -106,8 +141,18 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   // Pull-to-refresh spinner (re-fetch the latest page from the server).
   const [refreshing, setRefreshing] = useState(false);
+  // Synchronous guard for newer-message fetching (used by onEndReached) —
+  // state is async so we can't rely on `refreshing` inside the callback.
+  const refreshingRef = useRef(false);
+  // Minimum delay between bottom-fetch attempts (avoid hammering the server
+  // when there are no new messages at the bottom).
+  const lastNewerFetchRef = useRef(0);
   // Post ids whose long messages were manually expanded.
   const [expandedPosts, setExpandedPosts] = useState<Set<string>>(new Set());
+  // Flagged/saved post ids (from server preferences), tracked separately from
+  // post.props because Mattermost stores saved status as a preference, not in
+  // the post payload.
+  const [savedPostIds, setSavedPostIds] = useState<Set<string>>(new Set());
   // Whether to show the "jump to bottom" floating button (user scrolled up).
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
 
@@ -139,6 +184,24 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   // — otherwise it fires on mount (offset 0) and yanks the list to a random
   // page of history, which is exactly the "unknown offset" bug.
   const olderPostsEnabledRef = useRef(false);
+  // Short lock right after a prepend: the restored offset can land inside the
+  // onStartReached threshold, which would otherwise chain-load every page of
+  // history instantly ("jump to the oldest message").
+  const prependLockUntilRef = useRef(0);
+  // True while we are repositioning after a prepend. While true, onStartReached
+  // is suppressed so it can't chain-load the next page of history. Cleared only
+  // after the offset restore has actually been applied and settled.
+  const restoringOlderRef = useRef(false);
+  // Pending scroll-restore target captured by onContentSizeChange (the height
+  // that was prepended is only known once the list re-measures).
+  const pendingRestoreRef = useRef<{delta: number; prevOffset: number; prevHeight: number} | null>(null);
+  // The list's content height just before prepend, for the scrollToIndex-failed
+  // offset fallback.
+  const prependStartHeightRef = useRef(0);
+  // Anchor row used for exact history-prepend restore: we remember the index of
+  // the first fully-visible post so we can scroll back to it after older rows
+  // are inserted.
+  const anchorIndexRef = useRef(-1);
   // Consecutive ticks we've stayed at the bottom (used to settle the entry
   // positioning poll once content stops growing).
   const nearStreakRef = useRef(0);
@@ -234,6 +297,11 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   const typingCleanupRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Cursor for older-message pagination (oldest post id currently shown).
   const earliestPostIdRef = useRef<string | null>(null);
+  // Pending deep-link focus: the post id we still need to scroll to / highlight
+  // (the target may not be in the loaded window yet, so we track it while
+  // loading history).
+  const focusPostIdRef = useRef<string | null>(focusPostId || null);
+  const focusAttemptsRef = useRef(0);
   // Keeps scroll position when older messages are prepended.
   const scrollOffsetBeforePrependRef = useRef(0);
   // Draft persistence
@@ -286,7 +354,8 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         pendingPostId: p.pending_post_id || undefined,
         replyCount: p.reply_count || 0,
         reactions,
-        fileIds: p.metadata?.files?.map((f) => f.id) || p.props?.attachments || [],
+        files: p.metadata?.files || [],
+        embeds: p.metadata?.embeds || [],
         props: p.props || {},
       };
     },
@@ -440,6 +509,10 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
     const oldestId = earliestPostIdRef.current;
     if (!oldestId) return;
 
+    // Snapshot the scroll position BEFORE the prepend so we can restore it
+    // after (offset is updated continuously in onScroll).
+    const prevOffset = scrollOffsetBeforePrependRef.current;
+
     // Remember current scroll offset so we can restore it after prepend.
     // (updated continuously in onScroll)
     setLoadingEarlier(true);
@@ -499,22 +572,25 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         if (olderDisplay.length > 0) {
           earliestPostIdRef.current = olderDisplay[0].id;
         }
-        return [...olderDisplay, ...prev];
+        return sortPostsByTime([...olderDisplay, ...prev]);
       });
 
       // Store raw posts for thread navigation
       rawPostsRef.current = {...rawPostsRef.current, ...olderList.posts};
 
-      // Restore scroll position (keep the same messages on screen).
-      if (scrollOffsetBeforePrependRef.current > 0) {
-        const restoreOffset = scrollOffsetBeforePrependRef.current;
-        scrollOffsetBeforePrependRef.current = 0;
-        setTimeout(() => {
-          flatListRef.current?.scrollToOffset({offset: restoreOffset, animated: false});
-        }, 50);
-      }
-
-      setHasEarlierPosts(olderList.has_next);
+      // Restore scroll so the same messages stay on screen. Prepending adds
+      // content ABOVE the viewport, so the new offset = prevOffset + (height
+      // that was inserted). We don't know the inserted height until the list
+      // re-measures, so we accumulate the height delta across onContentSizeChange
+      // firings and re-scroll once the new content is measured. onStartReached
+      // is suppressed (restoringOlderRef) during this so it can't jump.
+      restoringOlderRef.current = true;
+      pendingRestoreRef.current = {
+        delta: 0,
+        prevOffset,
+        prevHeight: contentHeightRef.current,
+      };
+      prependLockUntilRef.current = Date.now() + 1500;
     } catch {
       // ignore pagination errors
     } finally {
@@ -531,8 +607,12 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   // list, keeping the scroll position).
   const refreshNewerPosts = useCallback(async () => {
     const teamId = client.getTeamId() || '';
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
+    lastNewerFetchRef.current = Date.now();
     if (posts.length === 0) {
       loadPosts(true);
+      refreshingRef.current = false;
       return;
     }
     // Find the newest REAL post — optimistic temp_ placeholders have ids that
@@ -559,6 +639,7 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         .filter((p: Post) => p.delete_at === 0)
         .sort((a, b) => a.create_at - b.create_at);
       if (newerPosts.length === 0) {
+        refreshingRef.current = false;
         return; // nothing new — keep the list as-is
       }
 
@@ -596,12 +677,7 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         const existingIds = new Set(prev.map((p) => p.id));
         const fresh = newerDisplay.filter((p) => !existingIds.has(p.id));
         if (fresh.length === 0) return prev;
-        // Insert new messages before any pending/optimistic temp posts.
-        const tempSplit = prev.findIndex((p) => p.id.startsWith('temp_'));
-        if (tempSplit >= 0) {
-          return [...prev.slice(0, tempSplit), ...fresh, ...prev.slice(tempSplit)];
-        }
-        return [...prev, ...fresh];
+        return sortPostsByTime([...prev, ...fresh]);
       });
       rawPostsRef.current = {...rawPostsRef.current, ...newerList.posts};
 
@@ -611,6 +687,7 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
     } catch {
       // ignore refresh errors
     } finally {
+      refreshingRef.current = false;
       setRefreshing(false);
     }
   }, [client, channel.id, toDisplayPost, posts.length]);
@@ -632,6 +709,17 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
     lastProgrammaticScrollRef.current = 0;
     userScrolledRef.current = false;
     olderPostsEnabledRef.current = false;
+    // Reply / edit / action / highlight are per-channel UI state — reset them
+    // when switching channels so a selected message in one channel never leaks
+    // into the next (the component instance is reused across channels).
+    setReplyTo(null);
+    setEditingPostId(null);
+    setActionPost(null);
+    setEmojiPickerPost(null);
+    setHighlightedPostId(null);
+    focusPostIdRef.current = focusPostId || null;
+    focusAttemptsRef.current = 0;
+    scrollOffsetBeforePrependRef.current = 0;
     // NOTE: viewportHeightRef is intentionally NOT reset — the list's viewport
     // height doesn't change between channels, and onLayout won't re-fire for an
     // unchanged frame, so resetting it would leave vh=0 and break positioning.
@@ -655,6 +743,88 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channel.id]);
+
+  // ── Deep-link focus: scroll to + highlight the target post ──
+  // Sync the incoming focusPostId prop into our persistent ref so late-arriving
+  // targets (e.g. from a push tapped after the screen mounted) are honored.
+  useEffect(() => {
+    if (focusPostId) {
+      focusPostIdRef.current = focusPostId;
+      focusAttemptsRef.current = 0;
+    }
+  }, [focusPostId]);
+  // The target may not be in the currently-rendered window (only the newest
+  // INITIAL_WINDOW posts render). If it's not found, we load older history each
+  // time (bounded) until it appears, then scroll + flash-highlight it.
+  useEffect(() => {
+    const target = focusPostIdRef.current;
+    if (!target) return;
+    const idx = posts.findIndex((p) => p.id === target);
+    if (idx >= 0) {
+      focusPostIdRef.current = null;
+      focusAttemptsRef.current = 0;
+      setHighlightedPostId(target);
+      // Let the list measure then snap to the focused row; use viewPosition
+      // 0.5 so it lands mid-screen rather than the very top.
+      setTimeout(() => {
+        flatListRef.current?.scrollToIndex({index: idx, viewPosition: 0.5, animated: true});
+      }, 150);
+      // Clear the highlight after a few seconds.
+      const t = setTimeout(() => setHighlightedPostId(null), 3500);
+      return () => clearTimeout(t);
+    } else if (hasEarlierPosts && focusAttemptsRef.current < 6) {
+      // Load another page of history to try to reach the focused message.
+      focusAttemptsRef.current += 1;
+      const t = setTimeout(() => {
+        loadEarlierPosts();
+        // Re-check after the prepend settles.
+        setTimeout(() => {
+          const i2 = posts.findIndex((p) => p.id === target);
+          if (i2 >= 0) {
+            focusPostIdRef.current = null;
+            focusAttemptsRef.current = 0;
+            setHighlightedPostId(target);
+            flatListRef.current?.scrollToIndex({index: i2, viewPosition: 0.5, animated: true});
+            const t2 = setTimeout(() => setHighlightedPostId(null), 3500);
+            return () => clearTimeout(t2);
+          }
+        }, 400);
+      }, 120);
+      return () => clearTimeout(t);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posts, focusPostId, hasEarlierPosts, loadEarlierPosts]);
+
+  // ── Keyboard height tracking (lift input above the keyboard) ──
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardWillShow', (e) => {
+      setKeyboardHeight(e.endCoordinates?.height ?? 0);
+    });
+    const showSub2 = Keyboard.addListener('keyboardDidShow', (e) => {
+      setKeyboardHeight(e.endCoordinates?.height ?? 0);
+    });
+    const hideSub = Keyboard.addListener('keyboardWillHide', () => setKeyboardHeight(0));
+    const hideSub2 = Keyboard.addListener('keyboardDidHide', () => setKeyboardHeight(0));
+    return () => {
+      showSub.remove();
+      showSub2.remove();
+      hideSub.remove();
+      hideSub2.remove();
+    };
+  }, []);
+
+  // ── Load flagged/saved post ids from server preferences (syncs with desktop) ──
+  useEffect(() => {
+    client.getPreferences().then((prefs) => {
+      const flagged = new Set<string>();
+      for (const p of prefs) {
+        if (p.category === 'flagged_post' && p.value === 'true') {
+          flagged.add(p.name);
+        }
+      }
+      setSavedPostIds(flagged);
+    }).catch(() => {});
+  }, [client]);
 
   // ── WebSocket event listeners ──
   useEffect(() => {
@@ -798,10 +968,10 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
                 : p,
             )
           : prev;
-        return [...withParentUpdate, dp];
+        return sortPostsByTime([...withParentUpdate, dp]);
       }
       // New root post
-      return [...prev, dp];
+      return sortPostsByTime([...prev, dp]);
     });
     // Auto-follow is handled by onContentSizeChange (grew + isNearBottom), so
     // no explicit scroll here — a separate timer would double-scroll.
@@ -830,7 +1000,9 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
 
     setSending(true);
     const msgContent = trimmed;
-    const replyRootId = replyTo?.id || '';
+    // Replies to a reply must attach to the thread ROOT (Mattermost threads
+    // are flat — every reply hangs off the root post).
+    const replyRootId = replyTo ? replyTo.rootId || replyTo.id : '';
     setMessage('');
 
     // ── Slash command handling ──
@@ -860,7 +1032,8 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
       pendingPostId: tempId,
       replyCount: 0,
       reactions: [],
-      fileIds: [],
+      files: [],
+      embeds: [],
       props: {},
     };
     if (!replyRootId) {
@@ -893,8 +1066,104 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   };
 
   // ── Typing indicator send ──
+  // Detect whether the user is composing an @-mention (the active "@" token).
+  const updateMentionState = (text: string) => {
+    // Find the last '@' that starts a mention token: preceded by start-of-text
+    // or whitespace, and followed by a word char (we don't autocomplete things
+    // like emails already containing @ mid-word).
+    let start = -1;
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '@') {
+        const prevOk = i === 0 || /[\s]/.test(text[i - 1]);
+        const nextOk = i + 1 < text.length && /[a-zA-Z0-9._-]/.test(text[i + 1]);
+        if (prevOk && nextOk) start = i;
+      }
+    }
+    if (start < 0) {
+      setMentionQuery(null);
+      mentionQueryRef.current = null;
+      return;
+    }
+    const sel = text.slice(start + 1);
+    // Stop the query at the first whitespace.
+    const end = sel.search(/[\s]/);
+    const query = end >= 0 ? sel.slice(0, end) : sel;
+    mentionStartRef.current = start;
+    setMentionQuery(query);
+    mentionQueryRef.current = query;
+  };
+
+  // Search users/bots matching the mention query. Tries the cached member list
+  // first (instant), then falls back to a server-side user search.
+  const runMentionSearch = useCallback(async (query: string) => {
+    const teamId = client.getTeamId() || '';
+    const q = query.toLowerCase();
+    const localMatches = mentionMembers.filter((u) => {
+      const uname = (u.username || '').toLowerCase();
+      return (
+        !q ||
+        uname.startsWith(q) ||
+        (u.first_name || '').toLowerCase().startsWith(q) ||
+        (u.last_name || '').toLowerCase().startsWith(q) ||
+        uname.includes(q)
+      );
+    });
+    if (localMatches.length > 0) {
+      setMentionResults(localMatches.slice(0, 8));
+      return;
+    }
+    if (!teamId) return;
+    try {
+      const results = await client.searchUsers(query, teamId);
+      setMentionResults(Array.isArray(results) ? results : []);
+    } catch {
+      // ignore
+    }
+  }, [client, mentionMembers]);
+
+  const applyMention = (user: UserProfile) => {
+    const mentionUser = user.username;
+    // Replace the active "@<query>" token with "@<username> ".
+    const start = mentionStartRef.current;
+    const len = mentionQuery ? mentionQuery.length + 1 : 1; // +1 for the '@'
+    let nextText: string;
+    if (start < 0) {
+      nextText = message ? `${message} @${mentionUser} ` : `@${mentionUser} `;
+    } else {
+      const before = message.slice(0, start);
+      const after = message.slice(start + len);
+      nextText = `${before}@${mentionUser} ${after}`.replace(/  +/g, ' ');
+    }
+    setMessage(nextText);
+    setMentionQuery(null);
+    // Persist the updated draft with the mention baked in.
+    if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
+    persistentStorage.setString(draftKey, nextText).catch(() => {});
+  };
+
+  // Mention suggestions to show (server/locally matched, bots first).
+  const mentionSuggestions = useMemo(() => {
+    if (mentionQuery === null) return [];
+    const arr = Array.isArray(mentionResults) ? mentionResults : [];
+    const sorted = [...arr].sort((a, b) => {
+      if (!!a.is_bot !== !!b.is_bot) return a.is_bot ? -1 : 1;
+      return (a.username || '').localeCompare(b.username || '');
+    });
+    return sorted.slice(0, 8);
+  }, [mentionQuery, mentionResults]);
+
   const handleTextChange = (text: string) => {
     setMessage(text);
+    updateMentionState(text);
+    // Trigger a server-side user search for the active @-mention (debounced) —
+    // more reliable than preloading all channel members and matches native.
+    if (mentionSearchTimerRef.current) clearTimeout(mentionSearchTimerRef.current);
+    mentionSearchTimerRef.current = setTimeout(() => {
+      const q = mentionQueryRef.current;
+      if (q !== null) {
+        runMentionSearch(q);
+      }
+    }, 200);
     // Persist draft (debounced)
     if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
     draftTimerRef.current = setTimeout(() => {
@@ -1047,19 +1316,186 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   };
 
   const handleReply = (post: DisplayPost) => {
+    setActionPost(null);
     const teamId = client.getTeamId() || '';
     const cachedPosts = cache.getPosts(teamId, channel.id);
-    const raw = cachedPosts?.posts[post.id] || rawPostsRef.current[post.id];
-    if (raw && onOpenThread) {
-      onOpenThread(raw);
-    } else {
-      setReplyTo(post);
+    // Mattermost threads are flat — every reply must hang off the ROOT post.
+    // If we're replying to a reply, reply to its root instead.
+    const rawPost = cachedPosts?.posts[post.id] || rawPostsRef.current[post.id];
+    if (post.rootId) {
+      const rootRaw = cachedPosts?.posts[post.rootId] || rawPostsRef.current[post.rootId];
+      if (rootRaw) {
+        const rootDp = toDisplayPost(rootRaw, userProfiles);
+        setReplyTo(rootDp);
+        return;
+      }
+    }
+    setReplyTo(post);
+  };
+
+  // Tapping a message enters an inline "thread reply" mode: the composer
+  // targets the ROOT of the tapped message's thread, so replies chain into
+  // that thread (matching the Android app's click-to-reply-in-thread).
+  const handleMessageTap = (post: DisplayPost) => {
+    setActionPost(null);
+    const teamId = client.getTeamId() || '';
+    const cachedPosts = cache.getPosts(teamId, channel.id);
+    if (post.rootId) {
+      const rootRaw = cachedPosts?.posts[post.rootId] || rawPostsRef.current[post.rootId];
+      if (rootRaw) {
+        const rootDp = toDisplayPost(rootRaw, userProfiles);
+        setReplyTo(rootDp);
+        return;
+      }
+    }
+    setReplyTo(post);
+  };
+
+  const handleViewThread = (post: DisplayPost) => {
+    const teamId = client.getTeamId() || '';
+    const cachedPosts = cache.getPosts(teamId, channel.id);
+    // Resolve the ROOT of the thread this post belongs to.
+    let target = cachedPosts?.posts[post.id] || rawPostsRef.current[post.id];
+    if (target && target.root_id) {
+      target = cachedPosts?.posts[target.root_id] || rawPostsRef.current[target.root_id] || target;
+    }
+    if (target && onOpenThread) {
+      onOpenThread(target);
     }
     setActionPost(null);
   };
 
-  const handleReact = async (post: DisplayPost, emoji: string) => {
-    setEmojiPickerPost(null);
+  const handleCopyText = (post: DisplayPost) => {
+    copyToClipboard(post.message).then(() => {
+      Alert.alert('Copied', 'Message text copied to clipboard.');
+    });
+    setActionPost(null);
+  };
+
+  const handleCopyLink = (post: DisplayPost) => {
+    const serverUrl = client.getServerUrl();
+    copyToClipboard(`${serverUrl}/pl/${post.id}`).then(() => {
+      Alert.alert('Copied', 'Message link copied to clipboard.');
+    });
+    setActionPost(null);
+  };
+
+  const handleForward = (post: DisplayPost) => {
+    setActionPost(null);
+    setForwardPost(post);
+    // Show cached channels instantly if available — no spinner.
+    const teamId = client.getTeamId() || '';
+    const cacheChannels = cache.getChannels(teamId);
+    if (cacheChannels && cacheChannels.length > 0) {
+      setForwardChannels(cacheChannels);
+      setForwardLoading(false);
+    } else {
+      setForwardLoading(true);
+    }
+    // Background refresh (only if cache was empty or to update); never blocks
+    // the modal from showing cached channels.
+    if (!cacheChannels || cacheChannels.length === 0) {
+      client
+        .getChannelsForUser(currentUserId, teamId)
+        .then((chans) => {
+          const list = Array.isArray(chans) ? chans : [];
+          setForwardChannels(list);
+          setForwardLoading(false);
+        })
+        .catch(() => setForwardLoading(false));
+    }
+  };
+
+  const doForward = async (target: Channel) => {
+    if (!forwardPost || forwardSending) return;
+    setForwardSending(true);
+    try {
+      // Forward: post the original message (kept verbatim) into the target
+      // channel, noting the original author via the /quote blockquote style.
+      const body = forwardPost.isOwn
+        ? forwardPost.message
+        : `> ${forwardPost.message}`;
+      await client.createPost({channel_id: target.id, message: body});
+      setForwardPost(null);
+      Alert.alert('Forwarded', `Forwarded to ${target.display_name || target.name}`);
+    } catch (err: any) {
+      Alert.alert('Forward failed', err.message || 'Failed to forward message');
+    } finally {
+      setForwardSending(false);
+      setForwardPost(null);
+    }
+  };
+
+  const handleUnfollowThread = async (post: DisplayPost) => {
+    setActionPost(null);
+    const teamId = client.getTeamId() || '';
+    const cachedPosts = cache.getPosts(teamId, channel.id);
+    // Unfollow the ROOT thread.
+    let target = cachedPosts?.posts[post.id] || rawPostsRef.current[post.id];
+    if (target && target.root_id) {
+      target = cachedPosts?.posts[target.root_id] || rawPostsRef.current[target.root_id] || target;
+    }
+    if (target) {
+      try {
+        await client.setThreadFollowing(teamId, target.id, false);
+        Alert.alert('Done', 'You will no longer follow this thread.');
+      } catch (err: any) {
+        Alert.alert('Error', err.message || 'Failed to unfollow thread');
+      }
+    } else {
+      Alert.alert('Not Available', 'Thread not found.');
+    }
+  };
+
+  const handleMarkUnread = async (post: DisplayPost) => {
+    setActionPost(null);
+    const teamId = client.getTeamId() || '';
+    try {
+      await client.markThreadUnread(teamId, post.id);
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to mark as unread');
+    }
+  };
+
+  const handleSave = async (post: DisplayPost) => {
+    setActionPost(null);
+    const userId = currentUserId;
+    const isSaved = savedPostIds.has(post.id);
+    const newValue = isSaved ? 'false' : 'true';
+    try {
+      await client.savePreferences([{user_id: userId, category: 'flagged_post', name: post.id, value: newValue}]);
+      // Optimistically toggle the saved set.
+      setSavedPostIds((prev) => {
+        const next = new Set(prev);
+        if (isSaved) {
+          next.delete(post.id);
+        } else {
+          next.add(post.id);
+        }
+        return next;
+      });
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to save message');
+    }
+  };
+
+  const handleRemind = async (post: DisplayPost) => {
+    setActionPost(null);
+    const snippet = post.message.replace(/\s+/g, ' ').slice(0, 120) || `${post.username}'s message`;
+    try {
+      const ok = await openCalendarReminder('Mattermost reminder', snippet);
+      if (!ok) {
+        Alert.alert(
+          'Reminder failed',
+          'Could not open the system calendar. Make sure calendar permissions are granted.',
+        );
+      }
+    } catch {
+      Alert.alert('Reminder failed', 'Could not open the system calendar.');
+    }
+  };
+
+  const handleReact = async (post: DisplayPost, emoji: string) => {    setEmojiPickerPost(null);
     // Find if user already reacted with this emoji
     const existing = post.reactions.find((r) => r.emoji === emoji && r.mine);
     try {
@@ -1111,12 +1547,14 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
 
   // ── Typing indicator text ──
   const typingText = useMemo(() => {
-    const active = Array.from(typingUsers.values());
+    // Only show OTHER users typing — never our own (matches the official app,
+    // which hides the typing indicator for the current user).
+    const active = Array.from(typingUsers.values()).filter((u) => u.userId !== currentUserId);
     if (active.length === 0) return '';
     if (active.length === 1) return `${active[0].username} is typing...`;
     if (active.length === 2) return `${active[0].username} and ${active[1].username} are typing...`;
     return `${active[0].username} and ${active.length - 1} others are typing...`;
-  }, [typingUsers]);
+  }, [typingUsers, currentUserId]);
 
   // ── Render ──
   // Map post id -> post for O(1) parent lookup in replies (avoids an O(n^2)
@@ -1130,7 +1568,9 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   const renderPost = ({item, index}: {item: DisplayPost; index: number}) => {
     const prevPost = index > 0 ? posts[index - 1] : null;
     const showDateSeparator = !prevPost || !isSameDay(prevPost.timestamp, item.timestamp);
-    const showAvatar = showDateSeparator || !prevPost || prevPost.userId !== item.userId || item.timestamp - prevPost.timestamp > 5 * 60 * 1000;
+    // Desktop-consistent: every message shows its full header (avatar, author,
+    // timestamp) — image/attachment posts always render as a proper message row.
+    const showAvatar = true;
     const profile = userProfiles[item.userId];
     const avatarUrl = profile ? client.getProfileImageUrl(item.userId, profile.last_picture_update) : undefined;
 
@@ -1161,17 +1601,23 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         <TouchableOpacity
           style={[
             styles.postRow,
-            item.isOwn ? styles.postRowOwn : null,
             item.isReply ? styles.postRowReply : null,
+            item.id === highlightedPostId ? styles.postRowHighlight : null,
+            item.isPinned ? styles.postRowPinned : null,
           ]}
-          onLongPress={() => setActionPost(item)}
+          onLongPress={(e) => {
+            const ge = e.nativeEvent;
+            setActionPos({x: ge.pageX ?? 0, y: ge.pageY ?? 0});
+            setActionPost(item);
+          }}
+          onPress={() => handleMessageTap(item)}
           activeOpacity={0.7}>
         {showAvatar ? (
           <Avatar url={avatarUrl} headers={imageHeaders} username={item.username} size={36} />
         ) : (
           <View style={{width: 36}} />
         )}
-        <View style={[styles.postContent, item.isOwn ? styles.postContentOwn : null]}>
+        <View style={styles.postContent}>
           {showAvatar && (
             <View style={styles.postHeader}>
               <Text style={styles.postUser}>{item.username}</Text>
@@ -1211,6 +1657,13 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
               });
             }}
           />
+          {item.files.length > 0 && <FileAttachments client={client} files={item.files} />}
+          <LinkPreview
+            embeds={item.embeds}
+            serverUrl={client.getServerUrl()}
+            onOpen={(url) => openInBrowser(url)}
+          />
+          <InlineImagePreviews message={item.message} onOpen={(url) => openInBrowser(url)} />
           {item.replyCount > 0 && (
             <TouchableOpacity
               style={styles.threadBadge}
@@ -1260,10 +1713,110 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
     );
   };
 
+  // Shared list of long-press actions — used by both the wide-screen popover
+  // (right-click style) and the phone bottom sheet.
+  const actionItems = () => (
+    <>
+      <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handleReply(actionPost)}>
+        <Text style={styles.actionIcon}>💬</Text>
+        <Text style={styles.actionLabel}>Reply</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handleViewThread(actionPost)}>
+        <Text style={styles.actionIcon}>🧵</Text>
+        <Text style={styles.actionLabel}>View Thread</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handleForward(actionPost)}>
+        <Text style={styles.actionIcon}>↪️</Text>
+        <Text style={styles.actionLabel}>Forward</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handleCopyText(actionPost)}>
+        <Text style={styles.actionIcon}>📋</Text>
+        <Text style={styles.actionLabel}>Copy Text</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handleCopyLink(actionPost)}>
+        <Text style={styles.actionIcon}>🔗</Text>
+        <Text style={styles.actionLabel}>Copy Link</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && setEmojiPickerPost(actionPost)}>
+        <Text style={styles.actionIcon}>😀</Text>
+        <Text style={styles.actionLabel}>React</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handleSave(actionPost)}>
+        <Text style={styles.actionIcon}>🔖</Text>
+        <Text style={styles.actionLabel}>{actionPost && savedPostIds.has(actionPost.id) ? 'Unsave' : 'Save'}</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handleRemind(actionPost)}>
+        <Text style={styles.actionIcon}>⏰</Text>
+        <Text style={styles.actionLabel}>Remind</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handleUnfollowThread(actionPost)}>
+        <Text style={styles.actionIcon}>🚫</Text>
+        <Text style={styles.actionLabel}>Unfollow Thread</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handleMarkUnread(actionPost)}>
+        <Text style={styles.actionIcon}>🔵</Text>
+        <Text style={styles.actionLabel}>Mark as Unread</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handlePin(actionPost)}>
+        <Text style={styles.actionIcon}>{actionPost?.isPinned ? '📌' : '📍'}</Text>
+        <Text style={styles.actionLabel}>{actionPost?.isPinned ? 'Unpin' : 'Pin to Channel'}</Text>
+      </TouchableOpacity>
+      {actionPost?.isOwn && (
+        <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handleEdit(actionPost)}>
+          <Text style={styles.actionIcon}>✏️</Text>
+          <Text style={styles.actionLabel}>Edit</Text>
+        </TouchableOpacity>
+      )}
+      {actionPost?.isOwn && (
+        <TouchableOpacity style={[styles.actionItem, styles.actionDanger]} onPress={() => actionPost && handleDelete(actionPost)}>
+          <Text style={styles.actionIcon}>🗑️</Text>
+          <Text style={[styles.actionLabel, styles.actionLabelDanger]}>Delete</Text>
+        </TouchableOpacity>
+      )}
+      <TouchableOpacity style={[styles.actionItem, styles.actionCancel]} onPress={() => setActionPost(null)}>
+        <Text style={styles.actionLabel}>Cancel</Text>
+      </TouchableOpacity>
+    </>
+  );
+
+  // Horizontal (right-click style) action layout for wide screens: each action
+  // is a compact icon-over-label cell laid out in a single horizontal row.
+  const actionItemsHorizontal = () => (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.actionGrid}>
+      {([
+        {icon: '💬', label: 'Reply', onPress: () => actionPost && handleReply(actionPost)},
+        {icon: '🧵', label: 'Thread', onPress: () => actionPost && handleViewThread(actionPost)},
+        {icon: '↪️', label: 'Forward', onPress: () => actionPost && handleForward(actionPost)},
+        {icon: '📋', label: 'Copy', onPress: () => actionPost && handleCopyText(actionPost)},
+        {icon: '🔗', label: 'Link', onPress: () => actionPost && handleCopyLink(actionPost)},
+        {icon: '😀', label: 'React', onPress: () => actionPost && setEmojiPickerPost(actionPost)},
+        {icon: '🔖', label: savedPostIds.has(actionPost?.id || '') ? 'Unsave' : 'Save', onPress: () => actionPost && handleSave(actionPost)},
+        {icon: '⏰', label: 'Remind', onPress: () => actionPost && handleRemind(actionPost)},
+        {icon: '🚫', label: 'Unfollow', onPress: () => actionPost && handleUnfollowThread(actionPost)},
+        {icon: '🔵', label: 'Unread', onPress: () => actionPost && handleMarkUnread(actionPost)},
+        {icon: actionPost?.isPinned ? '📌' : '📍', label: actionPost?.isPinned ? 'Unpin' : 'Pin', onPress: () => actionPost && handlePin(actionPost)},
+      ] as Array<{icon: string; label: string; onPress: () => void}>)
+        .concat(
+          actionPost?.isOwn
+            ? [
+                {icon: '✏️', label: 'Edit', onPress: () => actionPost && handleEdit(actionPost)},
+                {icon: '🗑️', label: 'Delete', onPress: () => actionPost && handleDelete(actionPost)},
+              ]
+            : [],
+        )
+        .map((item, idx) => (
+          <TouchableOpacity key={idx} style={styles.actionGridCell} onPress={item.onPress} activeOpacity={0.7}>
+            <Text style={styles.actionGridIcon}>{item.icon}</Text>
+            <Text style={styles.actionGridLabel} numberOfLines={1}>{item.label}</Text>
+          </TouchableOpacity>
+        ))}
+    </ScrollView>
+  );
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={'height'}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={0}>
       {/* Header */}
       <View style={[styles.header, inPane && styles.headerPane]}>
@@ -1350,24 +1903,93 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
           onLayout={(e) => {
             viewportHeightRef.current = e.nativeEvent.layout.height;
           }}
+          viewabilityConfig={{
+            itemVisiblePercentThreshold: 10,
+            minimumViewTime: 0,
+          }}
+          onViewableItemsChanged={({viewableItems}) => {
+            // Track the first (topmost) visible post as the scroll anchor so we
+            // can restore exact position after prepending older history.
+            if (!restoringOlderRef.current && viewableItems && viewableItems.length > 0) {
+              const first = viewableItems[0];
+              if (first && typeof first.index === 'number' && first.index >= 0) {
+                anchorIndexRef.current = first.index;
+              }
+            }
+          }}
           onContentSizeChange={(w, h) => {
+            // Track content height for exact bottom-offset math.
+            const prevH = contentHeightRef.current;
             contentHeightRef.current = h;
+
+            // While a history prepend is in flight, apply the offset restore
+            // once the list has grown by the inserted height.
+            if (restoringOlderRef.current) {
+              const pending = pendingRestoreRef.current;
+              if (pending && h > prevH) {
+                pending.delta = h - prevH;
+                // Apply: keep the previously-visible messages on screen.
+                flatListRef.current?.scrollToOffset({
+                  offset: Math.max(pending.prevOffset + pending.delta, 0),
+                  animated: false,
+                });
+                // End the restore window on the next scroll/tick.
+                setTimeout(() => {
+                  restoringOlderRef.current = false;
+                  pendingRestoreRef.current = null;
+                }, 80);
+              }
+              return;
+            }
+
             // Only the one-time initial jump to the newest message. Incoming
             // messages never auto-scroll (matches the official app).
             if (pendingScrollToEndRef.current && !loadingEarlier) {
-              console.log(`[Scroll] onContentSizeChange(pending) count=${posts.length}`);
               scrollToBottomOnce();
             }
           }}
           onStartReached={() => {
             // Older-message loading is disabled during entry positioning —
             // otherwise it fires at mount (offset 0) and yanks the list to a
-            // random page of history (the "unknown offset" bug).
-            if (olderPostsEnabledRef.current) {
+            // random page of history (the "unknown offset" bug). It's also
+            // suppressed while restoring position after a prepend, so it can't
+            // chain-load every page instantly.
+            if (
+              olderPostsEnabledRef.current &&
+              !restoringOlderRef.current &&
+              Date.now() > prependLockUntilRef.current
+            ) {
               loadEarlierPosts();
             }
           }}
           onStartReachedThreshold={0.1}
+          onEndReached={({distanceFromEnd}) => {
+            // When the user reaches the bottom (and is looking for new
+            // messages), fetch posts NEWER than the newest we have — mirroring
+            // the older-side onStartReached. Guard against re-entrancy + a
+            // cooldown so an empty bottom doesn't spam the server.
+            if (
+              !pendingScrollToEndRef.current &&
+              !refreshingRef.current &&
+              !loadingEarlier &&
+              distanceFromEnd < 200 &&
+              Date.now() - lastNewerFetchRef.current > 3000
+            ) {
+              refreshNewerPosts();
+            }
+          }}
+          onEndReachedThreshold={0.2}
+          onScrollToIndexFailed={() => {
+            // Variable-height rows can't be located by index precisely; fall
+            // back to the content-height-delta offset restore.
+            const growsBy = contentHeightRef.current - prependStartHeightRef.current;
+            const prevOffset = scrollOffsetBeforePrependRef.current;
+            const newOffset = Math.max(prevOffset + growsBy, 0);
+            flatListRef.current?.scrollToOffset({offset: newOffset, animated: false});
+            restoringOlderRef.current = false;
+            pendingRestoreRef.current = null;
+            prependLockUntilRef.current = Date.now() + 800;
+          }}
           ListHeaderComponent={
             loadingEarlier ? (
               <View style={styles.loadingContainer}>
@@ -1405,11 +2027,11 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         </View>
       ) : null}
 
-      {/* Reply / Edit banner */}
-      {(replyTo || editingPostId) && (
+      {/* Reply / Edit hint — light bar shown only while the input is empty. */}
+      {(replyTo || editingPostId) && !message.trim() && (
         <View style={styles.replyBanner}>
           <Text style={styles.replyBannerText} numberOfLines={1}>
-            {editingPostId ? 'Editing' : 'Replying to'}:{' '}
+            {editingPostId ? 'Editing: ' : 'Reply to: '}
             <Text style={styles.replyBannerContent}>
               {editingPostId ? message : replyTo?.message}
             </Text>
@@ -1420,8 +2042,37 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         </View>
       )}
 
+      {/* At-mention suggestions */}
+      {mentionSuggestions.length > 0 && (
+        <View style={styles.mentionPopup}>
+          {mentionSuggestions.map((u) => (
+            <TouchableOpacity
+              key={u.id}
+              style={styles.mentionItem}
+              activeOpacity={0.7}
+              onPress={() => applyMention(u)}>
+              <Avatar
+                url={client.getProfileImageUrl(u.id, u.last_picture_update)}
+                headers={imageHeaders}
+                username={u.username}
+                size={26}
+              />
+              <View style={styles.mentionTextWrap}>
+                <Text style={styles.mentionName}>@{u.username}</Text>
+                {u.is_bot && <Text style={styles.mentionBot}>BOT</Text>}
+              </View>
+              {(u.first_name || u.last_name) ? (
+                <Text style={styles.mentionFull} numberOfLines={1}>
+                  {`${u.first_name} ${u.last_name}`.trim()}
+                </Text>
+              ) : null}
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
       {/* Input */}
-      <View style={styles.inputBar}>
+      <View style={[styles.inputBar, {paddingBottom: keyboardHeight > 0 ? keyboardHeight : 8}]}>
         <TextInput
           style={styles.input}
           placeholder={editingPostId ? 'Edit message...' : 'Type a message...'}
@@ -1443,45 +2094,37 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         </TouchableOpacity>
       </View>
 
-      {/* Action sheet */}
+      {/* Long-press actions: right-click-style popup on large screens (the
+          sidebar is always visible, so a centered full-width sheet looks out
+          of place), bottom sheet on narrow/phone screens. */}
       <Modal
         visible={!!actionPost}
         transparent
-        animationType="slide"
+        animationType={inPane ? 'fade' : 'slide'}
         onRequestClose={() => setActionPost(null)}>
-        <TouchableOpacity style={styles.modalOverlay} onPress={() => setActionPost(null)}>
-          <View style={styles.actionSheet}>
-            <Text style={styles.actionTitle} numberOfLines={2}>
-              {actionPost?.message}
-            </Text>
-            <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handleReply(actionPost)}>
-              <Text style={styles.actionIcon}>💬</Text>
-              <Text style={styles.actionLabel}>Reply</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && setEmojiPickerPost(actionPost)}>
-              <Text style={styles.actionIcon}>😀</Text>
-              <Text style={styles.actionLabel}>React</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handlePin(actionPost)}>
-              <Text style={styles.actionIcon}>{actionPost?.isPinned ? '📌' : '📍'}</Text>
-              <Text style={styles.actionLabel}>{actionPost?.isPinned ? 'Unpin' : 'Pin'}</Text>
-            </TouchableOpacity>
-            {actionPost?.isOwn && (
-              <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handleEdit(actionPost)}>
-                <Text style={styles.actionIcon}>✏️</Text>
-                <Text style={styles.actionLabel}>Edit</Text>
-              </TouchableOpacity>
-            )}
-            {actionPost?.isOwn && (
-              <TouchableOpacity style={[styles.actionItem, styles.actionDanger]} onPress={() => actionPost && handleDelete(actionPost)}>
-                <Text style={styles.actionIcon}>🗑️</Text>
-                <Text style={[styles.actionLabel, styles.actionLabelDanger]}>Delete</Text>
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity style={[styles.actionItem, styles.actionCancel]} onPress={() => setActionPost(null)}>
-              <Text style={styles.actionLabel}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setActionPost(null)}>
+          {inPane && actionPos ? (
+            <View
+              style={[
+                styles.actionPopover,
+                {
+                  left: Math.min(actionPos.x, 320) + 4,
+                  top: Math.min(actionPos.y, 560) + 4,
+                },
+              ]}>
+              {actionItemsHorizontal()}
+            </View>
+          ) : (
+            <View style={styles.actionSheet}>
+              <Text style={styles.actionTitle} numberOfLines={2}>
+                {actionPost?.message}
+              </Text>
+              {actionItems()}
+            </View>
+          )}
         </TouchableOpacity>
       </Modal>
 
@@ -1508,6 +2151,43 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         </TouchableOpacity>
       </Modal>
 
+      {/* Forward channel picker */}
+      <Modal
+        visible={!!forwardPost}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setForwardPost(null)}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setForwardPost(null)}>
+          <View style={styles.forwardSheet}>
+            <Text style={styles.forwardTitle} numberOfLines={2}>
+              Forward to...
+            </Text>
+            {forwardSending ? (
+              <ActivityIndicator color={theme.linkColor} style={{marginVertical: 20}} />
+            ) : forwardLoading ? (
+              <ActivityIndicator color={theme.linkColor} style={{marginVertical: 20}} />
+            ) : forwardChannels.length === 0 ? (
+              <Text style={styles.forwardEmpty}>No channels available to forward to.</Text>
+            ) : (
+              <View style={styles.forwardList}>
+                {forwardChannels.map((c) => (
+                  <TouchableOpacity
+                    key={c.id}
+                    style={styles.forwardItem}
+                    onPress={() => doForward(c)}
+                    activeOpacity={0.7}>
+                    <Text style={styles.forwardItemName}>{c.display_name || c.name}</Text>
+                    <Text style={styles.forwardItemType}>
+                      {c.type === 'D' ? 'Direct' : c.type === 'P' ? 'Private' : 'Public'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
     </KeyboardAvoidingView>
   );
 }
@@ -1516,6 +2196,17 @@ function isSameDay(ts1: number, ts2: number): boolean {
   const d1 = new Date(ts1);
   const d2 = new Date(ts2);
   return d1.toDateString() === d2.toDateString();
+}
+
+// Chronological order is the single source of truth for the message list. After
+// any prepend/append/WS merge we re-sort by timestamp so heavy up/down pagination
+// can never leave messages out of order ("消息错乱").
+function sortPostsByTime(list: DisplayPost[]): DisplayPost[] {
+  const byId = new Map<string, DisplayPost>();
+  for (const p of list) {
+    if (!byId.has(p.id)) byId.set(p.id, p);
+  }
+  return Array.from(byId.values()).sort((a, b) => a.timestamp - b.timestamp);
 }
 
 // Date separator component
@@ -1646,13 +2337,20 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     paddingVertical: 4,
   },
-  postRowOwn: {
-    justifyContent: 'flex-end',
-  },
   postRowReply: {
     marginLeft: 20,
     marginBottom: 6,
     paddingVertical: 2,
+  },
+  postRowHighlight: {
+    backgroundColor: changeOpacity(theme.mentionBg, 0.18),
+    borderRadius: 8,
+  },
+  postRowPinned: {
+    borderLeftWidth: 3,
+    borderLeftColor: theme.linkColor,
+    paddingLeft: 8,
+    borderRadius: 4,
   },
   replyRefBar: {
     marginBottom: 4,
@@ -1673,9 +2371,6 @@ const styles = StyleSheet.create({
     marginLeft: 10,
     paddingVertical: 2,
     paddingHorizontal: 2,
-  },
-  postContentOwn: {
-    alignItems: 'flex-end',
   },
   postHeader: {
     flexDirection: 'row',
@@ -1788,10 +2483,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: theme.sidebarHeaderBg,
+    paddingVertical: 6,
+    backgroundColor: changeOpacity(theme.centerChannelColor, 0.06),
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: changeOpacity(theme.centerChannelColor, 0.2),
+    borderTopColor: changeOpacity(theme.centerChannelColor, 0.15),
   },
   replyBannerText: {
     flex: 1,
@@ -1814,6 +2509,47 @@ const styles = StyleSheet.create({
     backgroundColor: theme.centerChannelBg,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: changeOpacity(theme.centerChannelColor, 0.2),
+  },
+  mentionPopup: {
+    backgroundColor: theme.centerChannelBg,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: changeOpacity(theme.centerChannelColor, 0.2),
+    paddingHorizontal: 8,
+    maxHeight: 220,
+  },
+  mentionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+  },
+  mentionTextWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 10,
+    flexShrink: 1,
+  },
+  mentionName: {
+    color: theme.mentionHighlightLink,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  mentionBot: {
+    marginLeft: 6,
+    backgroundColor: changeOpacity(theme.linkColor, 0.15),
+    color: theme.linkColor,
+    fontSize: 10,
+    fontWeight: '700',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  mentionFull: {
+    marginLeft: 'auto',
+    color: changeOpacity(theme.centerChannelColor, 0.5),
+    fontSize: 12,
+    maxWidth: '40%',
   },
   input: {
     flex: 1,
@@ -1869,11 +2605,43 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
   },
   actionSheet: {
-    backgroundColor: theme.sidebarHeaderBg,
+    backgroundColor: theme.centerChannelBg,
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     paddingBottom: 34,
     paddingHorizontal: 16,
+  },
+  actionPopover: {
+    position: 'absolute',
+    backgroundColor: theme.centerChannelBg,
+    borderRadius: 10,
+    paddingHorizontal: 4,
+    paddingVertical: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: changeOpacity(theme.centerChannelColor, 0.25),
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    shadowOffset: {width: 0, height: 4},
+    elevation: 8,
+  },
+  actionGrid: {
+    flexDirection: 'row',
+    paddingVertical: 4,
+  },
+  actionGridCell: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 64,
+    paddingVertical: 8,
+  },
+  actionGridIcon: {
+    fontSize: 22,
+  },
+  actionGridLabel: {
+    color: theme.centerChannelColor,
+    fontSize: 11,
+    marginTop: 4,
   },
   actionTitle: {
     color: changeOpacity(theme.centerChannelColor, 0.6),
@@ -1893,7 +2661,7 @@ const styles = StyleSheet.create({
     width: 36,
   },
   actionLabel: {
-    color: theme.sidebarHeaderTextColor,
+    color: theme.centerChannelColor,
     fontSize: 16,
   },
   actionDanger: {},
@@ -1905,6 +2673,44 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: changeOpacity(theme.centerChannelColor, 0.2),
     marginTop: 8,
+  },
+  forwardSheet: {
+    backgroundColor: theme.centerChannelBg,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingBottom: 34,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+  },
+  forwardTitle: {
+    color: theme.centerChannelColor,
+    fontSize: 17,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+  forwardList: {
+    maxHeight: 320,
+  },
+  forwardItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: changeOpacity(theme.centerChannelColor, 0.12),
+  },
+  forwardItemName: {
+    color: theme.centerChannelColor,
+    fontSize: 15,
+  },
+  forwardItemType: {
+    color: changeOpacity(theme.centerChannelColor, 0.5),
+    fontSize: 12,
+  },
+  forwardEmpty: {
+    color: changeOpacity(theme.centerChannelColor, 0.6),
+    fontSize: 14,
+    paddingVertical: 16,
   },
   emojiPicker: {
     backgroundColor: theme.sidebarHeaderBg,

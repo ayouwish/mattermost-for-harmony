@@ -1,8 +1,13 @@
 /**
  * Avatar component — shows a user's profile image or a colored initial fallback.
+ *
+ * RNOH's <Image> pipeline ignores `source.headers`, so for authenticated
+ * profile photos we download the bytes with fetch() (which sends the
+ * Authorization header supplied via `headers`) and render a data: URI.
  */
-import React, {useState} from 'react';
+import React, {useEffect, useState} from 'react';
 import {Image, StyleSheet, Text, View} from 'react-native';
+import {fetchImageAsDataUri} from '../utils/imageDataUri';
 
 interface AvatarProps {
   /** Profile image URL (may be empty to use the fallback). */
@@ -29,17 +34,46 @@ function colorForUsername(username: string): string {
   return COLORS[Math.abs(hash) % COLORS.length];
 }
 
+function authHeaders(headers?: Record<string, string>): Record<string, string> {
+  if (!headers) return {};
+  const auth = headers['Authorization'] || headers['authorization'];
+  return auth ? {Authorization: auth} : {};
+}
+
 export function Avatar({url, headers, username, size = 36}: AvatarProps) {
+  const [uri, setUri] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const diameter = size;
   const initials = (username || '?').slice(0, 2).toUpperCase();
   const bgColor = colorForUsername(username || '?');
 
-  // Show fallback if no URL or the image failed to load.
-  if (url && !loadFailed) {
+  // Download via authenticated fetch → data URI (safe to render without headers).
+  useEffect(() => {
+    let cancelled = false;
+    if (!url) {
+      setUri(null);
+      setLoadFailed(false);
+      return;
+    }
+    setLoadFailed(false);
+    const remote = url.startsWith('http');
+    if (!remote) {
+      setUri(url);
+      return;
+    }
+    fetchImageAsDataUri(url, authHeaders(headers)).then((d) => {
+      if (!cancelled) setUri(d);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [url, headers]);
+
+  // Show fallback if no URL, not loaded yet, or the image failed to load.
+  if (url && uri && !loadFailed) {
     return (
       <Image
-        source={{uri: url, headers}}
+        source={{uri}}
         style={[styles.image, {width: diameter, height: diameter, borderRadius: diameter / 2}]}
         onError={() => setLoadFailed(true)}
       />

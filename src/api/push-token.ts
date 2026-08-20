@@ -28,7 +28,7 @@ export async function getPushToken(): Promise<string> {
   if (!mod) return '';
   try {
     const token = await mod.getPushToken();
-    console.log('[Push] getPushToken:', token ? '(got token)' : '(empty)');
+    console.log('[Push] getPushToken:', token ? `got token len=${token.length}` : '(empty)');
     return token || '';
   } catch (e) {
     console.log('[Push] getPushToken error:', e);
@@ -39,6 +39,7 @@ export async function getPushToken(): Promise<string> {
 export async function logPushToken(): Promise<void> {
   const token = await getPushToken();
   if (token) {
+    console.log('[PUSH_TOKEN]', token);
     console.log('[Push] Push token available, length:', token.length);
   } else {
     console.log('[Push] Push token not yet available (AGC/network?)');

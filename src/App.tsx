@@ -22,6 +22,7 @@ import SearchScreen from './screens/SearchScreen';
 import ChannelInfoScreen from './screens/ChannelInfoScreen';
 import ThreadsInboxScreen from './screens/ThreadsInboxScreen';
 import ThreadScreen from './screens/ThreadScreen';
+import SavedMessagesScreen from './screens/SavedMessagesScreen';
 
 const SIDEBAR_WIDTH = 320;
 const WIDE_BREAKPOINT = 700;
@@ -29,10 +30,11 @@ const WIDE_BREAKPOINT = 700;
 type Screen =
   | {name: 'login'}
   | {name: 'channels'}
-  | {name: 'chat'; channel: Channel}
+  | {name: 'chat'; channel: Channel; focusPostId?: string}
   | {name: 'thread'; channel: Channel; rootPost: Post}
   | {name: 'search'}
   | {name: 'channelInfo'; channel: Channel}
+  | {name: 'saved'}
   | {name: 'threads'};
 
 export default function App() {
@@ -78,6 +80,64 @@ export default function App() {
     setScreen({name: 'chat', channel});
   }, []);
 
+  // ── Push notification deep-link: when the user taps a push, consume the
+  // pending target (channel + post) and navigate to that message. ──
+  useEffect(() => {
+    if (!client) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const target = await import('./api/pushTarget').then((m) => m.consumePushTarget());
+        if (cancelled) return;
+        if (target) {
+          console.log(`[App] Push target: channel=${target.channelId} post=${target.postId}`);
+          try {
+            const channel = await client.getChannel(target.channelId);
+            if (cancelled) return;
+            // If it belongs to a thread, open the thread; otherwise open the
+            // channel chat and focus the message.
+            if (target.rootId && target.rootId !== target.postId) {
+              try {
+                const post = await client.getPost(target.rootId);
+                if (!cancelled) {
+                  setChatFromThreads(true);
+                  setScreen({name: 'thread', channel, rootPost: post});
+                }
+              } catch {
+                if (!cancelled) {
+                  setChatFromThreads(false);
+                  setScreen({name: 'chat', channel, focusPostId: target.postId});
+                }
+              }
+            } else {
+              setChatFromThreads(false);
+              setScreen({name: 'chat', channel, focusPostId: target.postId});
+            }
+          } catch {
+            // channel not found — ignore
+          }
+        }
+      } catch {
+        // ignore
+      } finally {
+        if (!cancelled) {
+          timer = setTimeout(poll, 2000);
+        }
+      }
+    };
+
+    // Start polling shortly after login so the module is ready.
+    timer = setTimeout(poll, 1500);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [client]);
+
+
   if (!client) {
     return (
       <SafeAreaView style={styles.container}>
@@ -115,6 +175,7 @@ export default function App() {
         onLogout={handleLogout}
         onSearch={() => setScreen({name: 'search'})}
         onThreads={() => setScreen({name: 'threads'})}
+        onSaved={() => setScreen({name: 'saved'})}
         onShowInfo={(channel: Channel) => setScreen({name: 'channelInfo', channel})}
         onCloseOverlay={() => {
           if (screen.name === 'search' || screen.name === 'threads' || screen.name === 'channelInfo' || screen.name === 'thread') {
@@ -158,6 +219,7 @@ export default function App() {
       onLogout={handleLogout}
       onSearch={() => setScreen({name: 'search'})}
       onThreads={() => setScreen({name: 'threads'})}
+      onSaved={() => setScreen({name: 'saved'})}
       onShowInfo={(channel: Channel) => setScreen({name: 'channelInfo', channel})}
     />
   );
@@ -228,6 +290,7 @@ function MainLayout({
   onThreads,
   onShowInfo,
   onCloseOverlay,
+  onSaved,
 }: {
   client: MattermostClient;
   screen: Screen;
@@ -240,6 +303,7 @@ function MainLayout({
   onThreads: () => void;
   onShowInfo: (channel: Channel) => void;
   onCloseOverlay: () => void;
+  onSaved: () => void;
 }) {
   return (
     <SafeAreaView style={styles.container}>
@@ -257,6 +321,7 @@ function MainLayout({
             onLogout={onLogout}
             onSearch={onSearch}
             onThreads={onThreads}
+            onSaved={onSaved}
             showHeader={false}
           />
         </View>
@@ -268,6 +333,7 @@ function MainLayout({
               onBack={onBack}
               onShowInfo={() => onShowInfo(screen.channel)}
               onOpenThread={(post) => onOpenThread(screen.channel, post)}
+              focusPostId={screen.focusPostId}
               inPane
             />
           ) : screen.name === 'thread' ? (
@@ -297,6 +363,15 @@ function MainLayout({
               client={client}
               channel={screen.channel}
               onClose={onCloseOverlay}
+              inPane
+            />
+          ) : screen.name === 'saved' ? (
+            <SavedMessagesScreen
+              client={client}
+              onBack={onCloseOverlay}
+              onOpenChannel={(channel, postId) => {
+                onSelectChannel(channel);
+              }}
               inPane
             />
           ) : (
@@ -331,6 +406,7 @@ function PhoneNavigator({
   onSearch,
   onThreads,
   onShowInfo,
+  onSaved,
 }: {
   client: MattermostClient;
   screen: Screen;
@@ -343,6 +419,7 @@ function PhoneNavigator({
   onSearch: () => void;
   onThreads: () => void;
   onShowInfo: (channel: Channel) => void;
+  onSaved: () => void;
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -362,6 +439,7 @@ function PhoneNavigator({
           onLogout={onLogout}
           onSearch={onSearch}
           onThreads={onThreads}
+          onSaved={onSaved}
         />
       ) : screen.name === 'chat' ? (
         <ChatScreen
@@ -371,6 +449,7 @@ function PhoneNavigator({
           onShowInfo={() => onShowInfo(screen.channel)}
           onMenu={() => setDrawerOpen(true)}
           onOpenThread={(post) => onOpenThread(screen.channel, post)}
+          focusPostId={screen.focusPostId}
         />
       ) : screen.name === 'thread' ? (
         <ThreadScreen
@@ -400,6 +479,15 @@ function PhoneNavigator({
           channel={screen.channel}
           onClose={onBack}
           onMenu={() => setDrawerOpen(true)}
+        />
+      ) : screen.name === 'saved' ? (
+        <SavedMessagesScreen
+          client={client}
+          onBack={onBack}
+          onOpenChannel={(ch, postId) => {
+            setDrawerOpen(false);
+            onSelectChannel(ch);
+          }}
         />
       ) : null}
 
