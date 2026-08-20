@@ -100,7 +100,7 @@ function AttachmentCard({embed, onOpen}: Omit<Props, 'embeds'> & {embed: PostEmb
   );
 }
 
-export function LinkPreview({embeds, serverUrl, onOpen}: Props) {
+export const LinkPreview = React.memo(function LinkPreview({embeds, serverUrl, onOpen}: Props) {
   if (!embeds || embeds.length === 0) return null;
   return (
     <View style={styles.container}>
@@ -116,12 +116,12 @@ export function LinkPreview({embeds, serverUrl, onOpen}: Props) {
       })}
     </View>
   );
-}
+});
 
 const IMAGE_URL_RE = /https?:\/\/[^\s<>"']+\.(?:png|jpe?g|gif|webp|bmp)(?:\?[^\s<>"']*)?/gi;
 
 /** Inline previews of bare image URLs in the message body. */
-export function InlineImagePreviews({message, onOpen}: {message: string; onOpen: (url: string) => void}) {
+export const InlineImagePreviews = React.memo(function InlineImagePreviews({message, onOpen}: {message: string; onOpen: (url: string) => void}) {
   const [urls, setUrls] = useState<string[]>([]);
   useEffect(() => {
     const matched = message.match(IMAGE_URL_RE) || [];
@@ -135,9 +135,9 @@ export function InlineImagePreviews({message, onOpen}: {message: string; onOpen:
       ))}
     </View>
   );
-}
+});
 
-function InlineImage({url, onOpen}: {url: string; onOpen: (url: string) => void}) {
+const InlineImage = React.memo(function InlineImage({url, onOpen}: {url: string; onOpen: (url: string) => void}) {
   const [uri, setUri] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -158,7 +158,7 @@ function InlineImage({url, onOpen}: {url: string; onOpen: (url: string) => void}
       )}
     </TouchableOpacity>
   );
-}
+});
 
 const styles = StyleSheet.create({
   container: {

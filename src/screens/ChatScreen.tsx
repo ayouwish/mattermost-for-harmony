@@ -1661,9 +1661,9 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
           <LinkPreview
             embeds={item.embeds}
             serverUrl={client.getServerUrl()}
-            onOpen={(url) => openInBrowser(url)}
+            onOpen={openInBrowserUrl}
           />
-          <InlineImagePreviews message={item.message} onOpen={(url) => openInBrowser(url)} />
+          <InlineImagePreviews message={item.message} onOpen={openInBrowserUrl} />
           {item.replyCount > 0 && (
             <TouchableOpacity
               style={styles.threadBadge}
@@ -1864,6 +1864,10 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
           contentContainerStyle={styles.listContent}
           refreshing={refreshing}
           onRefresh={refreshNewerPosts}
+          initialNumToRender={12}
+          maxToRenderPerBatch={8}
+          windowSize={9}
+          removeClippedSubviews
           onScroll={(e) => {
             const {contentOffset, contentSize, layoutMeasurement} = e.nativeEvent;
             scrollOffsetBeforePrependRef.current = contentOffset.y;
@@ -2191,6 +2195,12 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
     </KeyboardAvoidingView>
   );
 }
+
+// Stable module-level callback so memoized children (LinkPreview etc.) don't
+// re-render on every parent render due to a fresh arrow function identity.
+const openInBrowserUrl = (url: string) => {
+  openInBrowser(url);
+};
 
 function isSameDay(ts1: number, ts2: number): boolean {
   const d1 = new Date(ts1);

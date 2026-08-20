@@ -317,7 +317,7 @@ interface MarkdownProps {
   style?: any;
 }
 
-export function Markdown({text, style}: MarkdownProps) {
+export const Markdown = React.memo(function Markdown({text, style}: MarkdownProps) {
   if (!text) {
     return null;
   }
@@ -515,7 +515,7 @@ export function Markdown({text, style}: MarkdownProps) {
   flushList();
 
   return <View style={style}>{blocks}</View>;
-}
+});
 
 const mdStyles = StyleSheet.create({
   text: {

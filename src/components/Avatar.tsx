@@ -40,7 +40,7 @@ function authHeaders(headers?: Record<string, string>): Record<string, string> {
   return auth ? {Authorization: auth} : {};
 }
 
-export function Avatar({url, headers, username, size = 36}: AvatarProps) {
+export const Avatar = React.memo(function Avatar({url, headers, username, size = 36}: AvatarProps) {
   const [uri, setUri] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const diameter = size;
@@ -87,7 +87,7 @@ export function Avatar({url, headers, username, size = 36}: AvatarProps) {
       </Text>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   image: {

@@ -38,6 +38,11 @@ interface Props {
 // Throttle for [ThreadScroll] debug traces.
 let threadScrollTraceLast = 0;
 
+// Stable module-level callback so memoized children don't re-render.
+const openInBrowserUrl = (url: string) => {
+  openInBrowser(url);
+};
+
 interface DisplayReply {
   id: string;
   message: string;
@@ -524,9 +529,9 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
           <LinkPreview
             embeds={item.embeds}
             serverUrl={client.getServerUrl()}
-            onOpen={(url) => openInBrowser(url)}
+            onOpen={openInBrowserUrl}
           />
-          <InlineImagePreviews message={item.message} onOpen={(url) => openInBrowser(url)} />
+          <InlineImagePreviews message={item.message} onOpen={openInBrowserUrl} />
         </View>
       </View>
     );
@@ -565,6 +570,10 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
         renderItem={renderReply}
         style={styles.list}
         contentContainerStyle={styles.listContent}
+        initialNumToRender={12}
+        maxToRenderPerBatch={8}
+        windowSize={9}
+        removeClippedSubviews
         refreshing={refreshing}
         onRefresh={() => loadThread(true)}
         onLayout={(e) => {
@@ -626,9 +635,9 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
                 <LinkPreview
                   embeds={rootPost.metadata?.embeds || []}
                   serverUrl={client.getServerUrl()}
-                  onOpen={(url) => openInBrowser(url)}
+                  onOpen={openInBrowserUrl}
                 />
-                <InlineImagePreviews message={rootPost.message} onOpen={(url) => openInBrowser(url)} />
+                <InlineImagePreviews message={rootPost.message} onOpen={openInBrowserUrl} />
               </View>
             </View>
             <View style={styles.threadDivider}>

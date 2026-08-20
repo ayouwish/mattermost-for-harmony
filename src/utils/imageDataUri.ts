@@ -22,11 +22,14 @@ const BASE64_CHARS =
   'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 function encodeBase64(bytes: Uint8Array): string {
-  let result = '';
+  // Build into an array and join once — `+=` string concat is O(n²) in Hermes
+  // for large images (100s of KB), this keeps it near-linear.
+  const parts: string[] = new Array(Math.ceil(bytes.length / 3));
   let i = 0;
+  let out = 0;
   for (; i + 2 < bytes.length; i += 3) {
     const n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
-    result +=
+    parts[out++] =
       BASE64_CHARS[(n >> 18) & 63] +
       BASE64_CHARS[(n >> 12) & 63] +
       BASE64_CHARS[(n >> 6) & 63] +
@@ -35,16 +38,16 @@ function encodeBase64(bytes: Uint8Array): string {
   const remaining = bytes.length - i;
   if (remaining === 1) {
     const n = bytes[i] << 16;
-    result += BASE64_CHARS[(n >> 18) & 63] + BASE64_CHARS[(n >> 12) & 63] + '==';
+    parts[out++] = BASE64_CHARS[(n >> 18) & 63] + BASE64_CHARS[(n >> 12) & 63] + '==';
   } else if (remaining === 2) {
     const n = (bytes[i] << 16) | (bytes[i + 1] << 8);
-    result +=
+    parts[out++] =
       BASE64_CHARS[(n >> 18) & 63] +
       BASE64_CHARS[(n >> 12) & 63] +
       BASE64_CHARS[(n >> 6) & 63] +
       '=';
   }
-  return result;
+  return parts.join('');
 }
 
 // Simple stable hash for file names (kept ASCII-safe for the filesystem).

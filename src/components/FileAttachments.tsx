@@ -113,7 +113,7 @@ function GridImage({client, file, onPress}: {client: MattermostClient; file: Fil
   );
 }
 
-export function FileAttachments({client, files}: Props) {
+export const FileAttachments = React.memo(function FileAttachments({client, files}: Props) {
   const [viewerUri, setViewerUri] = useState<string | null>(null);
 
   if (!files || files.length === 0) return null;
@@ -214,7 +214,7 @@ export function FileAttachments({client, files}: Props) {
       </Modal>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   container: {
