@@ -12,7 +12,7 @@ function getModule(): any {
     resolved = true;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      nativeModule = TurboModuleRegistry.get<any>('Clipboard') || null;
+      nativeModule = TurboModuleRegistry.get<any>('MattermostClipboard') || null;
     } catch {
       nativeModule = null;
     }
@@ -22,11 +22,13 @@ function getModule(): any {
 
 export async function copyToClipboard(text: string): Promise<void> {
   const mod = getModule();
+  console.log(`[Clipboard] module=${mod ? 'found' : 'MISSING'} method=${mod?.setString ? 'ok' : 'missing'}`);
   if (!mod) return;
   try {
     await mod.setString(text);
-  } catch {
-    // ignore
+    console.log('[Clipboard] setString returned');
+  } catch (e) {
+    console.log('[Clipboard] setString error:', e);
   }
 }
 

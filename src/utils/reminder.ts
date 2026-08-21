@@ -23,20 +23,24 @@ function getModule(): any {
 
 /**
  * Opens the system calendar editor pre-filled with the message content so the
- * user can set a reminder time and save it. Returns true on success.
+ * user can set a reminder time and save it.
+ * Returns 'ok' | 'permission_denied' | 'error' | 'module_missing'.
  */
 export async function openCalendarReminder(
   title: string,
   description: string,
-): Promise<boolean> {
+): Promise<string> {
   const mod = getModule();
-  if (!mod) return false;
+  console.log(`[Reminder] module=${mod ? 'found' : 'MISSING'} method=${mod?.openCalendarReminder ? 'ok' : 'missing'}`);
+  if (!mod) return 'module_missing';
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ok: boolean = await mod.openCalendarReminder(title, description);
-    return Boolean(ok);
-  } catch {
-    return false;
+    const result: string = await mod.openCalendarReminder(title, description);
+    console.log(`[Reminder] native result=${result}`);
+    return typeof result === 'string' ? result : 'error';
+  } catch (e) {
+    console.log('[Reminder] call error:', e);
+    return 'error';
   }
 }
 

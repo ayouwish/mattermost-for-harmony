@@ -17,6 +17,10 @@ import { TurboModule, type TurboModuleContext } from '@rnoh/react-native-openhar
 import { calendarManager } from '@kit.CalendarKit';
 import { abilityAccessCtrl, common, Permissions } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+
+const DOMAIN = 0x0100;
+const TAG = 'MattermostReminder';
 
 const REMINDER_PERMISSIONS: Permissions[] = [
   'ohos.permission.READ_CALENDAR',
@@ -66,11 +70,12 @@ export class ReminderTurboModule extends TurboModule {
    * message content, starting 1 hour from now. The user can then edit it in
    * the system calendar app.
    */
-  async openCalendarReminder(title: string, description: string): Promise<boolean> {
+  async openCalendarReminder(title: string, description: string): Promise<string> {
     // Step 1: ensure calendar permissions (triggers system dialog if needed).
     const granted = await this.requestCalendarPermission();
     if (!granted) {
-      return false;
+      hilog.warn(DOMAIN, TAG, 'openCalendarReminder: permission NOT granted');
+      return 'permission_denied';
     }
     try {
       const now = Date.now();
@@ -86,18 +91,20 @@ export class ReminderTurboModule extends TurboModule {
       // Try editEvent (opens system editor UI) first; fall back to addEvent.
       try {
         const eventId: number = await calendarMgr.editEvent(event);
-        return eventId >= 0;
+        hilog.info(DOMAIN, TAG, 'editEvent ok id=%{public}d', eventId);
+        return 'ok';
       } catch (editErr) {
         const e1 = editErr as BusinessError;
-        console.log(`[Reminder] editEvent failed (${e1.code}), trying addEvent`);
+        hilog.warn(DOMAIN, TAG, 'editEvent failed code=%{public}d msg=%{public}s, trying addEvent', e1.code, e1.message ?? '');
         const calendar = await calendarMgr.getCalendar();
         const id: number = await calendar.addEvent(event);
-        return id >= 0;
+        hilog.info(DOMAIN, TAG, 'addEvent ok id=%{public}d', id);
+        return id >= 0 ? 'ok' : 'add_failed';
       }
     } catch (e) {
       const err = e as BusinessError;
-      console.log(`[Reminder] openCalendarReminder failed: ${err.code} ${err.message}`);
-      return false;
+      hilog.error(DOMAIN, TAG, 'openCalendarReminder failed: %{public}d %{public}s', err.code, err.message ?? '');
+      return 'error';
     }
   }
 

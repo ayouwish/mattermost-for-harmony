@@ -17,7 +17,9 @@ const DOMAIN = 0x0100;
 const TAG = 'MattermostClipboard';
 
 export class ClipboardTurboModule extends TurboModule {
-  public static readonly NAME = 'Clipboard';
+  // NOTE: deliberately NOT 'Clipboard' — RN core ships a deprecated Clipboard
+  // TurboModule stub that would shadow our native module by that name.
+  public static readonly NAME = 'MattermostClipboard';
 
   constructor(ctx: TurboModuleContext) {
     super(ctx);

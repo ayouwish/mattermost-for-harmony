@@ -1482,16 +1482,14 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   const handleRemind = async (post: DisplayPost) => {
     setActionPost(null);
     const snippet = post.message.replace(/\s+/g, ' ').slice(0, 120) || `${post.username}'s message`;
-    try {
-      const ok = await openCalendarReminder('Mattermost reminder', snippet);
-      if (!ok) {
-        Alert.alert(
-          'Reminder failed',
-          'Could not open the system calendar. Make sure calendar permissions are granted.',
-        );
-      }
-    } catch {
-      Alert.alert('Reminder failed', 'Could not open the system calendar.');
+    const result = await openCalendarReminder('Mattermost reminder', snippet);
+    if (result === 'permission_denied') {
+      Alert.alert(
+        'Calendar permission needed',
+        'Please grant calendar access in Settings → Apps → Mattermost → Permissions to use reminders.',
+      );
+    } else if (result !== 'ok') {
+      Alert.alert('Reminder failed', `Could not open the system calendar (${result}).`);
     }
   };
 

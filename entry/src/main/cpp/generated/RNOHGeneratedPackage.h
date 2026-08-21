@@ -11,15 +11,25 @@
 
 #include "RNOH/Package.h"
 #include "RNOH/ArkTSTurboModule.h"
+#include "generated/MattermostClipboard.h"
+#include "generated/ImageCache.h"
 #include "generated/Notifications.h"
 #include "generated/PersistentStorage.h"
 #include "generated/Push.h"
+#include "generated/Reminder.h"
+#include "generated/SystemOpen.h"
 
 namespace rnoh {
 
 class RNOHGeneratedPackageTurboModuleFactoryDelegate : public TurboModuleFactoryDelegate {
   public:
     SharedTurboModule createTurboModule(Context ctx, const std::string &name) const override {
+        if (name == "MattermostClipboard") {
+            return std::make_shared<MattermostClipboard>(ctx, name);
+        }
+        if (name == "ImageCache") {
+            return std::make_shared<ImageCache>(ctx, name);
+        }
         if (name == "Notifications") {
             return std::make_shared<Notifications>(ctx, name);
         }
@@ -28,6 +38,12 @@ class RNOHGeneratedPackageTurboModuleFactoryDelegate : public TurboModuleFactory
         }
         if (name == "Push") {
             return std::make_shared<Push>(ctx, name);
+        }
+        if (name == "Reminder") {
+            return std::make_shared<Reminder>(ctx, name);
+        }
+        if (name == "SystemOpen") {
+            return std::make_shared<SystemOpen>(ctx, name);
         }
         return nullptr;
     };

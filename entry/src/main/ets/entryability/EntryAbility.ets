@@ -4,6 +4,9 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { notificationManager } from '@kit.NotificationKit';
 import notification from '@ohos.notification';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { Want, AbilityConstant } from '@kit.AbilityKit';
+import wantAgent from '@ohos.app.ability.wantAgent';
+import { WantAgent } from '@ohos.wantAgent';
 
 const DOMAIN = 0x0100;
 const TAG = 'MattermostPush';
@@ -39,6 +42,10 @@ interface PushDeepLinkTarget {
   channelId: string;
   postId: string;
   rootId: string;
+  // When the target was captured (ms). Stale targets (user didn't tap the
+  // notification promptly) are discarded so old pushes never yank the app to a
+  // random channel later.
+  capturedAt: number;
 }
 
 /**
@@ -55,6 +62,33 @@ export class PushTokenHolder {
 export default class EntryAbility extends RNAbility {
   getPagePath() {
     return 'pages/Index';
+  }
+
+  // Extract the push deep-link params from a launch Want (set by the
+  // notification's wantAgent) and store them for JS to consume.
+  private capturePushTargetFromWant(want: Want): void {
+    try {
+      const params = want?.parameters as Record<string, string> | undefined;
+      const channelId = params?.pushChannelId || '';
+      const postId = params?.pushPostId || '';
+      const rootId = params?.pushRootId || '';
+      if (channelId && postId) {
+        hilog.info(DOMAIN, TAG, 'want deep-link: channel=%{public}s post=%{public}s', channelId, postId);
+        PushTokenHolder.pushTarget = { channelId, postId, rootId, capturedAt: Date.now() };
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    this.capturePushTargetFromWant(want);
+    super.onNewWant(want, launchParam);
+  }
+
+  onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    this.capturePushTargetFromWant(want);
+    super.onCreate(want, launchParam);
   }
 
   protected async onPrepareRNInstance(rnohCoreContext: RNOHCoreContext) {
@@ -111,7 +145,7 @@ export default class EntryAbility extends RNAbility {
    * Payload JSON (Mattermost push proxy / custom bridge) is expected to contain
    * fields like { title, message, channel_id, sender_id }.
    */
-  private publishFromPayload(dataStr: string): void {
+  private async publishFromPayload(dataStr: string): Promise<void> {
     try {
       const parsed = JSON.parse(dataStr) as PushPayload;
       // Support both raw payloads and wrapped { payload: { notification: ... } } objects.
@@ -139,8 +173,36 @@ export default class EntryAbility extends RNAbility {
         }
       }
 
+      // NOTE: we deliberately do NOT set PushTokenHolder.pushTarget here.
+      // The target is only consumed for navigation when the user TAPS the
+      // notification (which fires onNewWant with the wantAgent params). Setting
+      // it on receive would make the JS poll navigate the app even when the
+      // user never tapped anything ("jumped to a random channel" bug).
       if (channelId && postId) {
-        PushTokenHolder.pushTarget = { channelId, postId, rootId };
+        hilog.info(DOMAIN, TAG, 'notification deep-link params: channel=%{public}s post=%{public}s', channelId, postId);
+      }
+
+      // Build a WantAgent so tapping this notification opens the app with the
+      // channel/post deep-link parameters (parsed in onNewWant/onCreate).
+      let agent: WantAgent | undefined = undefined;
+      try {
+        const wantObj: Want = {
+          bundleName: this.context.abilityInfo.bundleName,
+          abilityName: 'EntryAbility',
+          parameters: {
+            pushChannelId: channelId,
+            pushPostId: postId,
+            pushRootId: rootId,
+          },
+        };
+        agent = await wantAgent.getWantAgent({
+          wants: [wantObj],
+          operationType: wantAgent.OperationType.START_ABILITY,
+          requestCode: 0,
+          wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG],
+        });
+      } catch (e) {
+        hilog.warn(DOMAIN, TAG, 'build wantAgent failed');
       }
 
       const request: notificationManager.NotificationRequest = {
@@ -152,6 +214,8 @@ export default class EntryAbility extends RNAbility {
             text: text,
           },
         },
+        // Tap → relaunch/foreground the app with the deep-link params.
+        wantAgent: agent,
       };
       notificationManager.publish(request).catch(() => {
         // ignore publish errors
