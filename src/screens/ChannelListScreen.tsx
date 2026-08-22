@@ -14,6 +14,7 @@
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {
   ActivityIndicator,
+  DeviceEventEmitter,
   FlatList,
   Modal,
   StyleSheet,
@@ -300,6 +301,21 @@ export default function ChannelListScreen({
 
     return () => unsubs.forEach((u) => u());
   }, [client, loadData, selectedTeamId]);
+
+  // Local unread-clear notifications from ChatScreen (entering a channel).
+  // The sidebar doesn't re-read the cache on its own, so it needs this nudge.
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('mm:unread-cleared', ({channelId}: {channelId: string}) => {
+      setDisplayChannels((prev) =>
+        prev.map((dc) =>
+          dc.channel.id === channelId
+            ? {...dc, unreadCount: 0, mentionCount: 0}
+            : dc,
+        ),
+      );
+    });
+    return () => sub.remove();
+  }, []);
 
   const handleLogout = () => {
     // Session cleanup now lives in App.handleLogout (shared by phone + wide layouts).

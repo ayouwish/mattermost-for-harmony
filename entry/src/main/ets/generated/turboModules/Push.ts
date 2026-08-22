@@ -15,5 +15,9 @@ export namespace Push {
   export interface Spec {
     getPushToken(): Promise<string>;
   
+    consumePushTarget(): Promise<string>;
+  
+    consumeSharedContent(): Promise<string>;
+  
   }
 }

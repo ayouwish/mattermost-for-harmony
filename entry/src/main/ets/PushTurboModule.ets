@@ -11,6 +11,7 @@
 
 import { TurboModule, type TurboModuleContext } from '@rnoh/react-native-openharmony/ts';
 import { PushTokenHolder } from './entryability/EntryAbility';
+import { preferences } from '@kit.ArkData';
 
 export class PushTurboModule extends TurboModule {
   public static readonly NAME = 'Push';
@@ -41,6 +42,30 @@ export class PushTurboModule extends TurboModule {
       return '';
     }
     return JSON.stringify(target);
+  }
+
+  /**
+   * Returns (and clears) content shared into the app from other apps via the
+   * system share sheet. Empty string when nothing is pending. Falls back to
+   * the persistent copy (ShareExtension may have run in a previous process).
+   */
+  async consumeSharedContent(): Promise<string> {
+    let shared = PushTokenHolder.sharedContent;
+    PushTokenHolder.sharedContent = '';
+    if (!shared) {
+      try {
+        const prefs = await preferences.getPreferences(this.ctx.uiAbilityContext, 'mattermost_storage');
+        const persisted = prefs.getSync('pendingSharedContent', '') as string;
+        if (persisted) {
+          prefs.deleteSync('pendingSharedContent');
+          await prefs.flush();
+          shared = persisted;
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+    return shared || '';
   }
 
   __onDestroy__() {

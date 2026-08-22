@@ -15,6 +15,7 @@ import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
+  DeviceEventEmitter,
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
@@ -217,6 +218,32 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   // Latest posts length, kept in a ref so debug traces read the current value.
   const postsLengthRef = useRef(0);
   postsLengthRef.current = posts.length;
+  // Latest posts snapshot for cleanup callbacks (avoid stale closures).
+  const latestPostsRef = useRef<DisplayPost[]>([]);
+  latestPostsRef.current = posts;
+  // Debounced read-cursor persistence: saved whenever scrolling settles so the
+  // stored position always reflects a real visible row (the unmount-time save
+  // alone could capture a stale anchor after pagination restores).
+  const cursorSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveReadCursor = useCallback(() => {
+    const list = latestPostsRef.current;
+    const anchorIdx = anchorIndexRef.current;
+    const topPost = anchorIdx >= 0 && anchorIdx < list.length ? list[anchorIdx] : list[0];
+    if (topPost && topPost.id && !topPost.id.startsWith('temp_')) {
+      const key = `readCursor:${channel.id}`;
+      persistentStorage.setString(key, topPost.id).catch(() => {});
+      persistentStorage.setString(`${key}:at`, String(Date.now())).catch(() => {});
+    }
+  }, [channel.id]);
+  const scheduleCursorSave = useCallback(() => {
+    if (cursorSaveTimerRef.current) clearTimeout(cursorSaveTimerRef.current);
+    cursorSaveTimerRef.current = setTimeout(() => {
+      // Skip while a pagination restore is in flight — the anchor is unreliable.
+      if (!restoringOlderRef.current) {
+        saveReadCursor();
+      }
+    }, 800);
+  }, [saveReadCursor]);
 
   const scrollToBottomOnce = useCallback(() => {
     lastProgrammaticScrollRef.current = Date.now();
@@ -411,7 +438,28 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   const loadPosts = useCallback(async (forceRefresh = false) => {
     const teamId = client.getTeamId() || '';
     try {
-      // Step 1: cached first-paint (newest window), positioned at the bottom.
+      // ── Resume from last-read cursor ──
+      // If the user previously read this channel partway through history,
+      // re-entering should show that position (not the newest page): fetch the
+      // messages NEWER than the saved cursor and position them like the newest
+      // window (bottom edge), so the user resumes exactly where they left off.
+      // Cursors expire after 24h (ancient positions are more surprising than
+      // helpful — better to land on the newest page).
+      const cursorKey = `readCursor:${channel.id}`;
+      let savedCursor = '';
+      let cursorSavedAt = 0;
+      try {
+        savedCursor = await persistentStorage.getString(cursorKey, '');
+        cursorSavedAt = Number(await persistentStorage.getString(`${cursorKey}:at`, '0')) || 0;
+      } catch {
+        savedCursor = '';
+      }
+      const cursorFresh = cursorSavedAt > 0 && Date.now() - cursorSavedAt < 24 * 60 * 60 * 1000;
+      const resumeFromCursor = savedCursor && cursorFresh && !forceRefresh;
+
+      // Step 1: cached first-paint — ALWAYS render the cached window instantly
+      // (no spinner while the cursor fetch runs); the cursor window replaces
+      // it once fetched.
       const cachedPostList = cache.getPosts(teamId, channel.id);
       let cachedNewestId: string | null = null;
       if (cachedPostList && !forceRefresh) {
@@ -422,16 +470,49 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         }
         setHasEarlierPosts(hasOlderPosts(cachedPostList, windowed.length));
         setLoading(false);
-        beginEntryPositioning();
+        if (!resumeFromCursor) {
+          beginEntryPositioning();
+        }
       } else {
         setLoading(true);
       }
 
       setError(null);
 
-      // Step 2: fetch the newest page (page=0 returns the newest posts;
-      // order[0] is the most recent message).
-      const postList: PostList = await client.getPostsForChannel(channel.id, {page: 0, per_page: 60});
+      // Step 2: fetch the appropriate page — newest by default, or the window
+      // after the saved read cursor when resuming.
+      let postList: PostList;
+      if (resumeFromCursor) {
+        try {
+          postList = await client.getPostsForChannel(channel.id, {
+            page: 0,
+            per_page: 30,
+            after: savedCursor,
+          });
+          // Include the cursor message itself as the scroll anchor.
+          if (savedCursor && !postList.posts[savedCursor]) {
+            try {
+              const cursorPost = await client.getPost(savedCursor);
+              postList = {
+                ...postList,
+                posts: {...postList.posts, [savedCursor]: cursorPost},
+                order: [...postList.order, savedCursor],
+              };
+            } catch {
+              // cursor post deleted — use what we have
+            }
+          }
+          if (Object.keys(postList.posts).length === 0) {
+            // Nothing newer than the cursor (fully read) — fall back to the
+            // newest page, positioned at the bottom like a fresh entry.
+            postList = await client.getPostsForChannel(channel.id, {page: 0, per_page: 60});
+          }
+        } catch {
+          postList = await client.getPostsForChannel(channel.id, {page: 0, per_page: 60});
+        }
+      } else {
+        postList = await client.getPostsForChannel(channel.id, {page: 0, per_page: 60});
+      }
       cache.setPosts(teamId, channel.id, postList);
 
       // Collect unique user IDs and fetch missing profiles
@@ -494,6 +575,9 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
       client.viewChannel(channel.id).catch(() => {});
       const tid = client.getTeamId() || '';
       cache.clearUnread(tid, channel.id);
+      // Tell the sidebar to refresh its (persistent) unread badges — the
+      // channel list doesn't re-read the cache on its own.
+      DeviceEventEmitter.emit('mm:unread-cleared', {channelId: channel.id});
     } catch (err: any) {
       setError(err.message || 'Failed to load messages');
     } finally {
@@ -717,7 +801,10 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
     setActionPost(null);
     setEmojiPickerPost(null);
     setHighlightedPostId(null);
-    focusPostIdRef.current = focusPostId || null;
+    // Clear any pending deep-link focus when switching channels — a stale
+    // focusPostId from a previous channel would page through history looking
+    // for a message that isn't there ("random jump to old messages").
+    focusPostIdRef.current = null;
     focusAttemptsRef.current = 0;
     scrollOffsetBeforePrependRef.current = 0;
     // NOTE: viewportHeightRef is intentionally NOT reset — the list's viewport
@@ -739,6 +826,12 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         clearTimeout(positioningPollTimerRef.current);
         positioningPollTimerRef.current = null;
       }
+      // Persist the last-read position (fallback — scroll already saves this
+      // debounced; the unmount save covers the never-scrolled case).
+      if (cursorSaveTimerRef.current) {
+        clearTimeout(cursorSaveTimerRef.current);
+      }
+      saveReadCursor();
       setActiveChannel(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1869,6 +1962,8 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
           onScroll={(e) => {
             const {contentOffset, contentSize, layoutMeasurement} = e.nativeEvent;
             scrollOffsetBeforePrependRef.current = contentOffset.y;
+            // Persist the read position (debounced) so re-entering resumes here.
+            scheduleCursorSave();
             // Once entry positioning has settled, any real scroll belongs to the
             // user (enables older-message loading). During positioning (pending)
             // we ignore scroll events so the snap-to-bottom can't be aborted by

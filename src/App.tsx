@@ -23,6 +23,7 @@ import ChannelInfoScreen from './screens/ChannelInfoScreen';
 import ThreadsInboxScreen from './screens/ThreadsInboxScreen';
 import ThreadScreen from './screens/ThreadScreen';
 import SavedMessagesScreen from './screens/SavedMessagesScreen';
+import ShareInModal from './components/ShareInModal';
 
 const SIDEBAR_WIDTH = 320;
 const WIDE_BREAKPOINT = 700;
@@ -43,6 +44,9 @@ export default function App() {
   // When true, the chat screen was opened from the Threads Inbox, so back
   // should return to the threads page instead of the channel list.
   const [chatFromThreads, setChatFromThreads] = useState(false);
+  // Content shared into the app from other apps (system share sheet) — shown
+  // in a channel-picker modal to post it.
+  const [sharedContent, setSharedContent] = useState<string | null>(null);
   const {width} = useWindowDimensions();
   const isWide = width >= WIDE_BREAKPOINT;
 
@@ -93,7 +97,6 @@ export default function App() {
         const target = await import('./api/pushTarget').then((m) => m.consumePushTarget());
         if (cancelled) return;
         if (target) {
-          console.log(`[App] Push target: channel=${target.channelId} post=${target.postId}`);
           try {
             const channel = await client.getChannel(target.channelId);
             if (cancelled) return;
@@ -119,6 +122,12 @@ export default function App() {
           } catch {
             // channel not found — ignore
           }
+        }
+        // Consume content shared from other apps (system share sheet).
+        const shared = await import('./api/pushTarget').then((m) => m.consumeSharedContent());
+        if (!cancelled && shared) {
+          console.log(`[App] Shared content received, len=${shared.length}`);
+          setSharedContent(shared);
         }
       } catch {
         // ignore
@@ -150,7 +159,8 @@ export default function App() {
   // ── Wide screen: sidebar + content two-pane layout ──
   if (isWide) {
     return (
-      <MainLayout
+      <>
+        <MainLayout
         client={client}
         screen={screen}
         onSelectChannel={(channel: Channel) => {
@@ -182,13 +192,20 @@ export default function App() {
             setScreen({name: 'channels'});
           }
         }}
-      />
+        />
+        <ShareInModal
+          client={client}
+          content={sharedContent}
+          onClose={() => setSharedContent(null)}
+        />
+      </>
     );
   }
 
   // ── Narrow screen: full-screen pages + drawer ──
   return (
-    <PhoneNavigator
+    <>
+      <PhoneNavigator
       client={client}
       screen={screen}
       chatFromThreads={chatFromThreads}
@@ -221,7 +238,13 @@ export default function App() {
       onThreads={() => setScreen({name: 'threads'})}
       onSaved={() => setScreen({name: 'saved'})}
       onShowInfo={(channel: Channel) => setScreen({name: 'channelInfo', channel})}
-    />
+      />
+      <ShareInModal
+        client={client}
+        content={sharedContent}
+        onClose={() => setSharedContent(null)}
+      />
+    </>
   );
 }
 

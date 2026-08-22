@@ -3,6 +3,8 @@ import * as TurboModuleRegistry from 'react-native/Libraries/TurboModule/TurboMo
 
 export interface Spec extends TurboModule {
   getPushToken(): Promise<string>;
+  consumePushTarget(): Promise<string>;
+  consumeSharedContent(): Promise<string>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('Push');

@@ -51,6 +51,22 @@ export async function consumePushTarget(): Promise<PushTarget | null> {
   }
 }
 
+/**
+ * Returns and clears content shared into the app from other apps (system
+ * share sheet), or null.
+ */
+export async function consumeSharedContent(): Promise<string | null> {
+  const mod = getModule();
+  if (!mod) return null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw: string = await mod.consumeSharedContent();
+    return raw || null;
+  } catch {
+    return null;
+  }
+}
+
 export default {
   consumePushTarget,
 };

@@ -239,7 +239,11 @@ export class JSAPIClient implements APIClientInterface {
       let data: unknown;
       const contentType = response.headers.get('content-type') || '';
       if (contentType.includes('application/json')) {
-        data = await response.json();
+        // Some endpoints (e.g. viewChannel) return 200 with an EMPTY body and
+        // still claim application/json — response.json() would throw "Unexpected
+        // end of JSON input" and fail the whole request. Parse defensively.
+        const text = await response.text();
+        data = text ? JSON.parse(text) : null;
       } else {
         data = await response.text();
       }

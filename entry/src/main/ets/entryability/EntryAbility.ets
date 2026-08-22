@@ -57,6 +57,9 @@ export class PushTokenHolder {
   // to open. JS reads (and clears) this via PushTurboModule to navigate the
   // user to the tapped notification's message.
   static pushTarget: PushDeepLinkTarget | null = null;
+  // Content shared INTO the app from other apps (system share sheet): text or
+  // URL. JS reads (and clears) this to let the user pick a channel and post it.
+  static sharedContent: string = '';
 }
 
 export default class EntryAbility extends RNAbility {
@@ -64,8 +67,8 @@ export default class EntryAbility extends RNAbility {
     return 'pages/Index';
   }
 
-  // Extract the push deep-link params from a launch Want (set by the
-  // notification's wantAgent) and store them for JS to consume.
+  // Extract the push deep-link params OR shared content from a launch Want and
+  // store them for JS to consume.
   private capturePushTargetFromWant(want: Want): void {
     try {
       const params = want?.parameters as Record<string, string> | undefined;
@@ -75,6 +78,22 @@ export default class EntryAbility extends RNAbility {
       if (channelId && postId) {
         hilog.info(DOMAIN, TAG, 'want deep-link: channel=%{public}s post=%{public}s', channelId, postId);
         PushTokenHolder.pushTarget = { channelId, postId, rootId, capturedAt: Date.now() };
+        return;
+      }
+      // Share sheet: other apps launch us with action ohos.want.action.sendData
+      // and the text/url in parameters (key varies by sender).
+      const action = want?.action || '';
+      if (action === 'ohos.want.action.sendData') {
+        const shared: string =
+          params?.['ohos.ability.share.content'] ||
+          params?.shareData ||
+          params?.text ||
+          params?.content ||
+          '';
+        if (shared) {
+          hilog.info(DOMAIN, TAG, 'shared content received, len=%{public}d', shared.length);
+          PushTokenHolder.sharedContent = shared;
+        }
       }
     } catch (e) {
       // ignore

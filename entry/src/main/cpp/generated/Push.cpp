@@ -15,6 +15,8 @@ using namespace facebook;
 Push::Push(const ArkTSTurboModule::Context ctx, const std::string name) : ArkTSTurboModule(ctx, name) {
     methodMap_ = {
         ARK_ASYNC_METHOD_METADATA(getPushToken, 0),
+        ARK_ASYNC_METHOD_METADATA(consumePushTarget, 0),
+        ARK_ASYNC_METHOD_METADATA(consumeSharedContent, 0),
     };
 }
 
