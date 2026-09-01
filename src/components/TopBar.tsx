@@ -67,7 +67,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingTop: 50,
+    // The status-bar inset is handled by the SafeAreaView in MainLayout —
+    // only a small breathing room is needed here (a fixed 50 here doubled up
+    // with the safe area and broke on rotation).
+    paddingTop: 12,
     paddingBottom: 12,
     backgroundColor: theme.sidebarHeaderBg,
     borderBottomWidth: StyleSheet.hairlineWidth,

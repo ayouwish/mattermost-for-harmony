@@ -128,16 +128,21 @@ export default function ThreadsInboxScreen({client, onClose, onOpenThread, onMen
   const loadInbox = useCallback(async () => {
     // Resolve a team: use the cached selection, otherwise auto-pick the first.
     let teamId = client.getTeamId();
+    console.log(`[ThreadsInbox] loadInbox: cachedTeamId=${teamId || '(null)'}`);
     if (!teamId) {
       try {
         const teams = await client.getTeams();
+        console.log(`[ThreadsInbox] getTeams -> ${teams.length} teams: ${teams.map((t) => `${t.id}/${t.name}`).join(', ') || '(empty)'}`);
         if (teams.length > 0) {
           teamId = teams[0].id;
           client.setTeamId(teamId);
         }
-      } catch {}
+      } catch (e) {
+        console.log('[ThreadsInbox] getTeams error:', e);
+      }
     }
     if (!teamId) {
+      console.log('[ThreadsInbox] !! No team selected — giving up');
       setError('No team selected');
       setLoading(false);
       return;
@@ -345,7 +350,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingTop: 50,
+    paddingTop: 12,
     paddingBottom: 12,
     backgroundColor: theme.sidebarHeaderBg,
     borderBottomWidth: StyleSheet.hairlineWidth,

@@ -125,6 +125,7 @@ export default function ChannelListScreen({
         teamList = await client.getTeams();
         cache.setTeams(teamList);
       }
+      console.log(`[ChannelList] teams: ${teamList.length} (cached=${!!cachedTeams}) selected=${selectedTeamId || '(none)'}`);
       setTeams(teamList);
 
       if (teamList.length > 0) {
@@ -755,7 +756,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingTop: 50,
+    paddingTop: 12,
     paddingBottom: 12,
     backgroundColor: theme.sidebarHeaderBg,
   },

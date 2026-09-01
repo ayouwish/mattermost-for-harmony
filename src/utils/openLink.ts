@@ -31,6 +31,22 @@ export async function openInBrowser(url: string): Promise<boolean> {
   }
 }
 
+/**
+ * Shares text out to other apps (WeChat / Weibo / Huawei Share ...) via the
+ * system share panel. Returns true when the panel was opened.
+ */
+export async function shareText(title: string, content: string): Promise<boolean> {
+  const mod = getModule();
+  if (!mod) return false;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return Boolean(await mod.shareText(title, content));
+  } catch {
+    return false;
+  }
+}
+
 export default {
   openInBrowser,
+  shareText,
 };

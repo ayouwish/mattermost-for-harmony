@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import {createClient, type MattermostClient} from '../api/client';
+import {cache} from '../api/cache';
 import {persistentStorage, STORAGE_KEYS} from '../api/persistent-storage';
 import {setCurrentUserId, requestNotificationPermission} from '../api/notifications';
 import {getPushToken} from '../api/push-token';
@@ -50,6 +51,7 @@ export default function LoginScreen({onLogin}: Props) {
           client.setToken(savedToken);
           // Verify token is still valid
           const me = await client.getMe();
+          console.log(`[Login] auto-login getMe: ${me ? `id=${me.id} user=${me.username}` : 'null'}`);
           if (me && me.id) {
             // Token works — connect WS and enter app
             setCurrentUserId(me.id);
@@ -113,6 +115,11 @@ export default function LoginScreen({onLogin}: Props) {
       const client = createClient(url);
       const user = await client.login(username.trim(), password);
       if (user) {
+        // Invalidate any cached data from a PREVIOUS account (teams/channels/
+        // posts/users are per-user). Without this, a fresh login would reuse
+        // the old account's team list → "no team selected" / empty channels.
+        cache.invalidateAll();
+
         // Persist session
         await persistentStorage.setString(STORAGE_KEYS.SERVER_URL, url);
         await persistentStorage.setString(STORAGE_KEYS.AUTH_TOKEN, client.getToken() || '');

@@ -59,6 +59,17 @@ export default function App() {
     import('./api/push-token').then((m) => m.logPushToken()).catch(() => {});
   }, []);
 
+  // Session expiry: any 401 from the API means the token is dead — drop back
+  // to the login screen (otherwise every screen fails with empty data /
+  // "no team selected" while the app looks logged in).
+  useEffect(() => {
+    if (!client) return;
+    client.onSessionExpired(() => {
+      console.log('[App] Session expired (401) — forcing logout');
+      handleLogout();
+    });
+  }, [client]);
+
   const handleLogin = (newClient: MattermostClient) => {
     setClient(newClient);
     setScreen({name: 'channels'});

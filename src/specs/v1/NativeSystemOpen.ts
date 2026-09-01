@@ -3,6 +3,7 @@ import * as TurboModuleRegistry from 'react-native/Libraries/TurboModule/TurboMo
 
 export interface Spec extends TurboModule {
   openUrl(url: string): Promise<boolean>;
+  shareText(title: string, content: string): Promise<boolean>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('SystemOpen');

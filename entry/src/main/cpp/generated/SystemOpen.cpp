@@ -15,6 +15,7 @@ using namespace facebook;
 SystemOpen::SystemOpen(const ArkTSTurboModule::Context ctx, const std::string name) : ArkTSTurboModule(ctx, name) {
     methodMap_ = {
         ARK_ASYNC_METHOD_METADATA(openUrl, 1),
+        ARK_ASYNC_METHOD_METADATA(shareText, 2),
     };
 }
 

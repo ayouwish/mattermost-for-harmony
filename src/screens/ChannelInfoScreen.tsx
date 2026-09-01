@@ -479,7 +479,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 12,
-    paddingTop: 50,
+    paddingTop: 12,
     paddingBottom: 12,
     backgroundColor: theme.sidebarHeaderBg,
     borderBottomWidth: StyleSheet.hairlineWidth,

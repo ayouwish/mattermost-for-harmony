@@ -15,5 +15,7 @@ export namespace SystemOpen {
   export interface Spec {
     openUrl(url: string): Promise<boolean>;
   
+    shareText(title: string, content: string): Promise<boolean>;
+  
   }
 }

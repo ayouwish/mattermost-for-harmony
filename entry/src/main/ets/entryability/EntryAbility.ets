@@ -71,6 +71,19 @@ export default class EntryAbility extends RNAbility {
   // store them for JS to consume.
   private capturePushTargetFromWant(want: Want): void {
     try {
+      // Deeplink from a tapped system push notification:
+      // mattermost://msg?channel=<id>&post=<id>&root=<id>
+      const uri = want?.uri || '';
+      if (uri.startsWith('mattermost://msg')) {
+        const channelId = this.queryParam(uri, 'channel');
+        const postId = this.queryParam(uri, 'post');
+        const rootId = this.queryParam(uri, 'root');
+        if (channelId && postId) {
+          hilog.info(DOMAIN, TAG, 'deeplink: channel=%{public}s post=%{public}s', channelId, postId);
+          PushTokenHolder.pushTarget = { channelId, postId, rootId, capturedAt: Date.now() };
+          return;
+        }
+      }
       const params = want?.parameters as Record<string, string> | undefined;
       const channelId = params?.pushChannelId || '';
       const postId = params?.pushPostId || '';
@@ -98,6 +111,23 @@ export default class EntryAbility extends RNAbility {
     } catch (e) {
       // ignore
     }
+  }
+
+  // Extract a query param from a uri string (lightweight, no URL class).
+  private queryParam(uri: string, key: string): string {
+    try {
+      const q = uri.slice(uri.indexOf('?') + 1);
+      const pairs = q.split('&');
+      for (const pair of pairs) {
+        const kv = pair.split('=');
+        if (kv.length >= 2 && kv[0] === key) {
+          return decodeURIComponent(kv[1]);
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+    return '';
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {

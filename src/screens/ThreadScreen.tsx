@@ -3,13 +3,14 @@
  *
  * Displays the root message + all replies, with the ability to post new replies.
  */
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   StyleSheet,
   Text,
@@ -22,9 +23,12 @@ import {cache} from '../api/cache';
 import type {Channel, FileInfo, Post, PostEmbed, PostList, UserProfile} from '../api/types';
 import {WebSocketEvents} from '../api/types';
 import {Avatar, FileAttachments, InlineImagePreviews, LinkPreview, Markdown} from '../components';
+import PostActionMenu from '../components/PostActionMenu';
 import {formatTime} from '../utils/dateFormat';
 import {theme, changeOpacity} from '../theme/utils';
-import {openInBrowser} from '../utils/openLink';
+import {openInBrowser, shareText} from '../utils/openLink';
+import {copyToClipboard} from '../utils/clipboard';
+import {openCalendarReminder} from '../utils/reminder';
 
 interface Props {
   client: MattermostClient;
@@ -42,6 +46,8 @@ let threadScrollTraceLast = 0;
 const openInBrowserUrl = (url: string) => {
   openInBrowser(url);
 };
+
+const QUICK_EMOJIS = ['👍', '❤️', '🎉', '😂', '😮', '😢', '🚀', '✅'];
 
 interface DisplayReply {
   id: string;
@@ -61,6 +67,12 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  // ── Long-press action menu state (parity with ChatScreen) ──
+  const [actionReply, setActionReply] = useState<DisplayReply | null>(null);
+  const [actionPos, setActionPos] = useState<{x: number; y: number} | null>(null);
+  const [emojiPickerReply, setEmojiPickerReply] = useState<DisplayReply | null>(null);
+  // Flagged/saved post ids (server preferences), for the Save/Unsave label.
+  const [savedPostIds, setSavedPostIds] = useState<Set<string>>(new Set());
   // Pull-to-refresh spinner.
   const [refreshing, setRefreshing] = useState(false);
   // Whether to show the "jump to bottom" floating button.
@@ -226,6 +238,38 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
     [currentUserId],
   );
 
+  // ── Root-post normalization ──
+  // The "rootPost" prop may actually be a REPLY (e.g. long-press → View Thread
+  // on a reply whose root isn't in cache). Replying with root_id = a reply's id
+  // makes the server reject the post. Normalize: if the incoming post has a
+  // root_id, fetch the true root once and use it everywhere.
+  const [effectiveRoot, setEffectiveRoot] = useState<Post>(rootPost);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let root: Post = rootPost;
+      if (rootPost.root_id) {
+        try {
+          const trueRoot = await client.getPost(rootPost.root_id);
+          if (!cancelled && trueRoot && trueRoot.id) {
+            root = trueRoot;
+          }
+        } catch {
+          // fall back to the passed post
+        }
+      }
+      if (!cancelled && root.id !== effectiveRoot.id) {
+        setEffectiveRoot(root);
+      } else if (!cancelled) {
+        setEffectiveRoot(root);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rootPost.id]);
+
   const applyThreadData = useCallback(async (postList: PostList, isInitial = false) => {
     // Build reply rows using CACHED profiles only, so cached replies render
     // instantly. Missing profiles are fetched in the background below and
@@ -244,7 +288,7 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
 
     // Get replies only (exclude root), sorted by time
     const replyList = Object.values(postList.posts)
-      .filter((p: Post) => p.id !== rootPost.id && p.root_id === rootPost.id)
+      .filter((p: Post) => p.id !== effectiveRoot.id && p.root_id === effectiveRoot.id)
       .map((p: Post) => toDisplayReply(p, cachedProfiles))
       .sort((a, b) => a.timestamp - b.timestamp);
 
@@ -282,7 +326,7 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
         })
         .catch(() => {});
     }
-  }, [client, rootPost.id, toDisplayReply, beginEntryPositioning]);
+  }, [client, effectiveRoot.id, toDisplayReply, beginEntryPositioning]);
 
   const loadThread = useCallback(async (asRefresh = false) => {
     try {
@@ -313,13 +357,13 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
       // Always seed it into userProfiles so the header never shows "unknown",
       // even when the profile is already cached (the old code only set state
       // when it had to fetch, leaving a gap for cached profiles).
-      if (rootPost.user_id) {
-        const cachedRoot = cache.getUser(rootPost.user_id);
+      if (effectiveRoot.user_id) {
+        const cachedRoot = cache.getUser(effectiveRoot.user_id);
         if (cachedRoot) {
           setUserProfiles((prev) => (prev[cachedRoot.id] ? prev : {...prev, [cachedRoot.id]: cachedRoot}));
         } else {
           try {
-            const rootUser = await client.getUser(rootPost.user_id);
+            const rootUser = await client.getUser(effectiveRoot.user_id);
             cache.setUser(rootUser);
             setUserProfiles((prev) => ({...prev, [rootUser.id]: rootUser}));
           } catch {}
@@ -329,7 +373,7 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
       // Show cached replies instantly, then refresh in background.
       // The cached data is the "local messages" the user positions against;
       // the server refresh updates the list WITHOUT re-scrolling.
-      let cached = cache.getThreadPosts(rootPost.id);
+      let cached = cache.getThreadPosts(effectiveRoot.id);
       if (!cached && !asRefresh) {
         // No dedicated thread cache yet — seed it from the channel's cached
         // posts (root + replies) so the thread renders instantly instead of
@@ -339,7 +383,7 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
         if (channelPosts?.posts) {
           const threadPosts: Record<string, Post> = {};
           for (const [id, p] of Object.entries(channelPosts.posts)) {
-            if (id === rootPost.id || p.root_id === rootPost.id) {
+            if (id === effectiveRoot.id || p.root_id === effectiveRoot.id) {
               threadPosts[id] = p;
             }
           }
@@ -351,7 +395,7 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
               prev_post_id: channelPosts.prev_post_id,
               has_next: channelPosts.has_next,
             };
-            cache.setThreadPosts(rootPost.id, cached);
+            cache.setThreadPosts(effectiveRoot.id, cached);
           }
         }
       }
@@ -359,15 +403,15 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
         await applyThreadData(cached, true);
       }
 
-      const postList: PostList = await client.getPostThread(rootPost.id);
-      cache.setThreadPosts(rootPost.id, postList);
+      const postList: PostList = await client.getPostThread(effectiveRoot.id);
+      cache.setThreadPosts(effectiveRoot.id, postList);
       await applyThreadData(postList, !cached);
 
       // Mark the thread as read on the server so it stops counting as unread
       // in the Threads inbox.
       const teamId = client.getTeamId();
       if (teamId) {
-        client.markThreadRead(teamId, rootPost.id).catch(() => {});
+        client.markThreadRead(teamId, effectiveRoot.id).catch(() => {});
       }
     } catch {
       // ignore
@@ -375,7 +419,7 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
       setLoading(false);
       setRefreshing(false);
     }
-  }, [client, rootPost.id, rootPost.user_id, channel.id, applyThreadData]);
+  }, [client, effectiveRoot.id, effectiveRoot.user_id, channel.id, applyThreadData]);
 
   useEffect(() => {
     loadThread();
@@ -385,15 +429,15 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
   // renders as "unknown" while loadThread's async profile fetch is in flight.
   useEffect(() => {
     const seed: Record<string, UserProfile> = {};
-    if (rootPost.user_id) {
-      const cachedRoot = cache.getUser(rootPost.user_id);
+    if (effectiveRoot.user_id) {
+      const cachedRoot = cache.getUser(effectiveRoot.user_id);
       if (cachedRoot) seed[cachedRoot.id] = cachedRoot;
     }
     const tid = client.getTeamId() || '';
     const channelPosts = cache.getPosts(tid, channel.id)?.posts;
     if (channelPosts) {
       for (const p of Object.values(channelPosts)) {
-        if ((p.id === rootPost.id || p.root_id === rootPost.id) && p.user_id && !seed[p.user_id]) {
+        if ((p.id === effectiveRoot.id || p.root_id === effectiveRoot.id) && p.user_id && !seed[p.user_id]) {
           const u = cache.getUser(p.user_id);
           if (u) seed[u.id] = u;
         }
@@ -413,14 +457,14 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rootPost.id]);
+  }, [effectiveRoot.id]);
 
   // Listen for new posts in this thread via WebSocket
   useEffect(() => {
     const unsub = client.onWsEvent(WebSocketEvents.POSTED, (msg) => {
       try {
         const postData = JSON.parse(msg.data?.post || '{}');
-        if (postData.root_id !== rootPost.id) return;
+        if (postData.root_id !== effectiveRoot.id) return;
 
         const senderId = postData.user_id;
         if (senderId && !userProfiles[senderId]) {
@@ -437,7 +481,7 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
     });
     return unsub;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, rootPost.id, userProfiles]);
+  }, [client, effectiveRoot.id, userProfiles]);
 
   const addReply = useCallback((dr: DisplayReply) => {
     setReplies((prev) => {
@@ -480,7 +524,7 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
       const created = await client.createPost({
         channel_id: channel.id,
         message: msgContent,
-        root_id: rootPost.id,
+        root_id: effectiveRoot.id,
       });
       // Replace the optimistic row with the server-created post so the reply
       // is visible immediately even if the WS posted event is delayed. addReply
@@ -506,13 +550,240 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
     }
   };
 
+  // ── Long-press actions (parity with ChatScreen) ──
+  // Load flagged/saved post ids from server preferences (syncs with desktop).
+  useEffect(() => {
+    client.getPreferences().then((prefs) => {
+      const flagged = new Set<string>();
+      for (const p of prefs) {
+        if (p.category === 'flagged_post' && p.value === 'true') {
+          flagged.add(p.name);
+        }
+      }
+      setSavedPostIds(flagged);
+    }).catch(() => {});
+  }, [client]);
+
+  const updateReply = useCallback((post_id: string, patch: Partial<DisplayReply>) => {
+    setReplies((prev) => prev.map((r) => (r.id === post_id ? {...r, ...patch} : r)));
+  }, []);
+
+  const handleReact = async (post: DisplayReply, emoji: string) => {
+    setEmojiPickerReply(null);
+    const existing = post.reactions.find((r) => r.emoji === emoji && r.mine);
+    try {
+      if (existing) {
+        await client.removeReaction(post.id, emoji);
+      } else {
+        await client.addReaction(post.id, emoji);
+      }
+      setReplies((prev) =>
+        prev.map((p) => {
+          if (p.id !== post.id) return p;
+          const reactions = [...p.reactions];
+          const idx = reactions.findIndex((r) => r.emoji === emoji);
+          if (idx >= 0) {
+            if (existing) {
+              reactions[idx] = {...reactions[idx], count: reactions[idx].count - 1, mine: false};
+              if (reactions[idx].count <= 0) reactions.splice(idx, 1);
+            } else {
+              reactions[idx] = {...reactions[idx], count: reactions[idx].count + 1, mine: true};
+            }
+          } else {
+            reactions.push({emoji, count: 1, mine: true});
+          }
+          return {...p, reactions};
+        }),
+      );
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to react');
+    }
+  };
+
+  const handleEdit = (post: DisplayReply) => {
+    // Edit-in-place is complex in the thread composer; reuse the alert-free
+    // approach: put the text in the composer as an edit and submit on send.
+    setActionReply(null);
+    Alert.prompt?.(
+      'Edit Message',
+      '',
+      async (text: string) => {
+        try {
+          await client.updatePost(post.id, {message: text});
+          updateReply(post.id, {message: text, isEdited: true});
+        } catch (err: any) {
+          Alert.alert('Error', err.message || 'Failed to edit');
+        }
+      },
+      'plain-text',
+      post.message,
+    ) ?? (() => {
+      // Alert.prompt is iOS-only — fall back to loading the composer.
+      setMessage(post.message);
+      setEditingReplyId(post.id);
+    })();
+  };
+  // Id of the reply being edited via the composer (Android-style fallback).
+  const [editingReplyId, setEditingReplyId] = useState<string | null>(null);
+
+  const submitEdit = async () => {
+    const target = replies.find((r) => r.id === editingReplyId);
+    if (!target || !message.trim()) return;
+    try {
+      await client.updatePost(target.id, {message: message.trim()});
+      updateReply(target.id, {message: message.trim(), isEdited: true});
+      setEditingReplyId(null);
+      setMessage('');
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to edit');
+    }
+  };
+
+  const handleDelete = (post: DisplayReply) => {
+    setActionReply(null);
+    Alert.alert('Delete Message', 'Are you sure you want to delete this message?', [
+      {text: 'Cancel', style: 'cancel'},
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await client.deletePost(post.id);
+            setReplies((prev) => prev.filter((r) => r.id !== post.id));
+          } catch (err: any) {
+            Alert.alert('Error', err.message || 'Failed to delete');
+          }
+        },
+      },
+    ]);
+  };
+
+  const handlePin = async (post: DisplayReply) => {
+    setActionReply(null);
+    try {
+      await client.pinPost(post.id);
+      Alert.alert('Pinned', 'Message pinned to channel.');
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to pin');
+    }
+  };
+
+  const handleCopyText = (post: DisplayReply) => {
+    setActionReply(null);
+    copyToClipboard(post.message).then(() => {
+      Alert.alert('Copied', 'Message text copied to clipboard.');
+    });
+  };
+
+  const handleCopyLink = (post: DisplayReply) => {
+    setActionReply(null);
+    const serverUrl = client.getServerUrl();
+    copyToClipboard(`${serverUrl}/pl/${post.id}`).then(() => {
+      Alert.alert('Copied', 'Message link copied to clipboard.');
+    });
+  };
+
+  const handleSave = async (post: DisplayReply) => {
+    setActionReply(null);
+    const isSaved = savedPostIds.has(post.id);
+    const newValue = isSaved ? 'false' : 'true';
+    try {
+      await client.savePreferences([
+        {user_id: currentUserId, category: 'flagged_post', name: post.id, value: newValue},
+      ]);
+      setSavedPostIds((prev) => {
+        const next = new Set(prev);
+        if (isSaved) {
+          next.delete(post.id);
+        } else {
+          next.add(post.id);
+        }
+        return next;
+      });
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to save message');
+    }
+  };
+
+  const handleRemind = async (post: DisplayReply) => {
+    setActionReply(null);
+    const snippet = post.message.replace(/\s+/g, ' ').slice(0, 120) || `${post.username}'s message`;
+    const result = await openCalendarReminder('Mattermost reminder', snippet);
+    if (result === 'permission_denied') {
+      Alert.alert('Calendar permission needed', 'Grant calendar access in Settings to use reminders.');
+    } else if (result !== 'ok') {
+      Alert.alert('Reminder failed', `Could not open the system calendar (${result}).`);
+    }
+  };
+
+  const handleShare = async (post: DisplayReply) => {
+    setActionReply(null);
+    const serverUrl = client.getServerUrl();
+    const content = `${post.message}\n${serverUrl}/pl/${post.id}`;
+    const ok = await shareText('Mattermost', content);
+    if (!ok) {
+      Alert.alert('Share failed', 'Could not open the system share panel.');
+    }
+  };
+
+  const handleUnfollow = async () => {
+    setActionReply(null);
+    const teamId = client.getTeamId() || '';
+    try {
+      await client.setThreadFollowing(teamId, effectiveRoot.id, false);
+      Alert.alert('Done', 'You will no longer follow this thread.');
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to unfollow thread');
+    }
+  };
+
+  const handleMarkUnread = async (post: DisplayReply) => {
+    setActionReply(null);
+    const teamId = client.getTeamId() || '';
+    try {
+      await client.markThreadUnread(teamId, post.id);
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to mark as unread');
+    }
+  };
+
+  // Menu items for the currently long-pressed reply.
+  const actionItems = useMemo(() => {
+    const post = actionReply;
+    if (!post) return [] as Array<{icon: string; label: string; onPress: () => void; danger?: boolean}>;
+    const items: Array<{icon: string; label: string; onPress: () => void; danger?: boolean}> = [
+      {icon: '📋', label: 'Copy', onPress: () => handleCopyText(post)},
+      {icon: '🔗', label: 'Link', onPress: () => handleCopyLink(post)},
+      {icon: '📤', label: 'Share', onPress: () => handleShare(post)},
+      {icon: '😀', label: 'React', onPress: () => setEmojiPickerReply(post)},
+      {icon: '🔖', label: savedPostIds.has(post.id) ? 'Unsave' : 'Save', onPress: () => handleSave(post)},
+      {icon: '⏰', label: 'Remind', onPress: () => handleRemind(post)},
+      {icon: '📍', label: 'Pin', onPress: () => handlePin(post)},
+      {icon: '🚫', label: 'Unfollow', onPress: () => handleUnfollow()},
+      {icon: '🔵', label: 'Unread', onPress: () => handleMarkUnread(post)},
+    ];
+    if (post.isOwn) {
+      items.push({icon: '✏️', label: 'Edit', onPress: () => handleEdit(post)});
+      items.push({icon: '🗑️', label: 'Delete', onPress: () => handleDelete(post), danger: true});
+    }
+    return items;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actionReply, savedPostIds]);
+
   const renderReply = ({item}: {item: DisplayReply}) => {
     const profile = userProfiles[item.userId];
     const avatarUrl = profile
       ? client.getProfileImageUrl(item.userId, profile.last_picture_update)
       : undefined;
     return (
-      <View style={styles.replyRow}>
+      <TouchableOpacity
+        style={styles.replyRow}
+        activeOpacity={0.8}
+        onLongPress={(e) => {
+          const ge = e.nativeEvent;
+          setActionPos({x: ge.pageX ?? 0, y: ge.pageY ?? 0});
+          setActionReply(item);
+        }}>
         <Avatar url={avatarUrl} headers={imageHeadersRef.current} username={item.username} size={32} />
         <View style={[styles.replyContent, item.isOwn && styles.replyContentOwn]}>
           <View style={styles.replyHeader}>
@@ -532,15 +803,28 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
             onOpen={openInBrowserUrl}
           />
           <InlineImagePreviews message={item.message} onOpen={openInBrowserUrl} />
+          {item.reactions.length > 0 && (
+            <View style={styles.reactionRow}>
+              {item.reactions.map((r, idx) => (
+                <TouchableOpacity
+                  key={idx}
+                  style={[styles.reactionChip, r.mine && styles.reactionChipMine]}
+                  onPress={() => handleReact(item, r.emoji)}>
+                  <Text style={styles.reactionEmoji}>{r.emoji}</Text>
+                  <Text style={styles.reactionCount}>{r.count}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
         </View>
-      </View>
+      </TouchableOpacity>
     );
   };
 
   // Root post display
-  const rootProfile = userProfiles[rootPost.user_id];
+  const rootProfile = userProfiles[effectiveRoot.user_id];
   const rootAvatarUrl = rootProfile
-    ? client.getProfileImageUrl(rootPost.user_id, rootProfile.last_picture_update)
+    ? client.getProfileImageUrl(effectiveRoot.user_id, rootProfile.last_picture_update)
     : undefined;
 
   return (
@@ -625,19 +909,19 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
                     {rootProfile?.username || 'unknown'}
                   </Text>
                   <Text style={styles.rootPostTime}>
-                    {formatTime(rootPost.create_at)}
+                    {formatTime(effectiveRoot.create_at)}
                   </Text>
                 </View>
-                <Markdown text={rootPost.message} style={styles.rootMarkdown} />
-                {(rootPost.metadata?.files || []).length > 0 && (
-                  <FileAttachments client={client} files={rootPost.metadata?.files || []} />
+                <Markdown text={effectiveRoot.message} style={styles.rootMarkdown} />
+                {(effectiveRoot.metadata?.files || []).length > 0 && (
+                  <FileAttachments client={client} files={effectiveRoot.metadata?.files || []} />
                 )}
                 <LinkPreview
-                  embeds={rootPost.metadata?.embeds || []}
+                  embeds={effectiveRoot.metadata?.embeds || []}
                   serverUrl={client.getServerUrl()}
                   onOpen={openInBrowserUrl}
                 />
-                <InlineImagePreviews message={rootPost.message} onOpen={openInBrowserUrl} />
+                <InlineImagePreviews message={effectiveRoot.message} onOpen={openInBrowserUrl} />
               </View>
             </View>
             <View style={styles.threadDivider}>
@@ -677,7 +961,7 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
       <View style={[styles.inputBar, {paddingBottom: keyboardHeight > 0 ? keyboardHeight : 8}]}>
         <TextInput
           style={styles.input}
-          placeholder="Reply to thread..."
+          placeholder={editingReplyId ? 'Edit reply...' : 'Reply to thread...'}
           placeholderTextColor="#6b7ca0"
           value={message}
           onChangeText={setMessage}
@@ -686,15 +970,48 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
         />
         <TouchableOpacity
           style={[styles.sendButton, (!message.trim() || sending) && styles.sendDisabled]}
-          onPress={handleSend}
+          onPress={editingReplyId ? submitEdit : handleSend}
           disabled={!message.trim() || sending}>
           {sending ? (
             <ActivityIndicator size="small" color="#fff" />
           ) : (
-            <Text style={styles.sendText}>Send</Text>
+            <Text style={styles.sendText}>{editingReplyId ? '✓' : 'Send'}</Text>
           )}
         </TouchableOpacity>
       </View>
+
+      {/* Long-press action menu (parity with ChatScreen) */}
+      <PostActionMenu
+        visible={!!actionReply}
+        messagePreview={actionReply?.message || ''}
+        pos={actionPos}
+        popover={inPane}
+        items={actionItems}
+        onClose={() => setActionReply(null)}
+      />
+
+      {/* Emoji picker */}
+      <Modal
+        visible={!!emojiPickerReply}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEmojiPickerReply(null)}>
+        <TouchableOpacity style={styles.modalOverlay} onPress={() => setEmojiPickerReply(null)}>
+          <View style={styles.emojiPicker}>
+            <Text style={styles.emojiPickerTitle}>React with emoji</Text>
+            <View style={styles.emojiGrid}>
+              {QUICK_EMOJIS.map((emoji) => (
+                <TouchableOpacity
+                  key={emoji}
+                  style={styles.emojiCell}
+                  onPress={() => emojiPickerReply && handleReact(emojiPickerReply, emoji)}>
+                  <Text style={styles.emojiCellText}>{emoji}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -708,7 +1025,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingTop: 50,
+    paddingTop: 12,
     paddingBottom: 12,
     backgroundColor: theme.sidebarHeaderBg,
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -890,5 +1207,63 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: '600',
+  },
+  reactionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 4,
+  },
+  reactionChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: changeOpacity(theme.centerChannelColor, 0.2),
+    marginRight: 6,
+    marginBottom: 4,
+  },
+  reactionChipMine: {
+    borderColor: theme.linkColor,
+    backgroundColor: changeOpacity(theme.linkColor, 0.1),
+  },
+  reactionEmoji: {
+    fontSize: 14,
+    marginRight: 4,
+  },
+  reactionCount: {
+    color: changeOpacity(theme.centerChannelColor, 0.7),
+    fontSize: 12,
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  emojiPicker: {
+    backgroundColor: theme.centerChannelBg,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingBottom: 34,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+  },
+  emojiPickerTitle: {
+    color: changeOpacity(theme.centerChannelColor, 0.6),
+    fontSize: 14,
+    marginBottom: 12,
+  },
+  emojiGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  emojiCell: {
+    width: '25%',
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  emojiCellText: {
+    fontSize: 26,
   },
 });

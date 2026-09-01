@@ -67,6 +67,20 @@ export class MattermostClient {
         'Content-Type': 'application/json',
       },
     });
+    // Surface session expiry (401) so the app can drop the user back to the
+    // login screen instead of silently failing every request with empty data
+    // ("no team selected" style symptoms).
+    this.http.onError = (event) => {
+      if (event.statusCode === 401 && this.sessionExpiredHandler) {
+        this.sessionExpiredHandler();
+      }
+    };
+  }
+
+  // Set by App.tsx: called once when the session turns out to be expired.
+  private sessionExpiredHandler: (() => void) | null = null;
+  onSessionExpired(handler: () => void): void {
+    this.sessionExpiredHandler = handler;
   }
 
   // ── URL Helpers ──
@@ -168,14 +182,38 @@ export class MattermostClient {
 
     const res = await this.http.post(`${this.usersRoute()}/login`, body);
 
-    // Store token from response header
-    const token = res.headers['token'] || res.headers['Token'];
+    // The server rejects bad credentials with 401 + a JSON error body — check
+    // the status FIRST so we surface the real message instead of treating the
+    // error body as a successful login.
+    if (!res.ok || res.status >= 400) {
+      const errMsg =
+        (res.data && typeof res.data === 'object'
+          ? ((res.data as Record<string, any>).message as string | undefined)
+          : undefined) || `Login failed (HTTP ${res.status})`;
+      throw new Error(errMsg);
+    }
+
+    // Store token from the response header ("Token" — RN lowercases header
+    // names). Some deployments/proxies strip custom response headers, so also
+    // fall back to common body fields before failing hard.
+    const token =
+      res.headers['token'] ||
+      res.headers['Token'] ||
+      (res.data && typeof res.data === 'object' ? ((res.data as Record<string, any>).token ?? '') : '') ||
+      '';
     if (token) {
       this.token = token;
       this.http.setToken(token);
+    } else {
+      // Without a session token every subsequent request 401s — fail the
+      // login instead of pretending it succeeded.
+      throw new Error('Login succeeded but no session token was returned by the server.');
     }
 
     const user = res.data as UserProfile;
+    if (!user || !user.id) {
+      throw new Error('Login response did not include user info.');
+    }
     this.userId = user.id;
     notifications.setCurrentUserId(user.id);
     return user;
@@ -310,10 +348,13 @@ export class MattermostClient {
   // ── Teams ──
 
   async getTeams(): Promise<Team[]> {
-    const res = await this.http.get(
-      this.teamsRoute(),
-      this.authHeaders,
-    );
+    // /api/v4/teams returns ALL teams on the server (admin listing) — the
+    // current user may not belong to team[0], which broke account switching
+    // ("no team selected"). /users/me/teams returns only the user's teams.
+    const url = `${this.userRoute('me')}/teams`;
+    console.log(`[Client] getTeams GET ${url} token=${this.token ? '(present)' : '(MISSING)'}`);
+    const res = await this.http.get(url, this.authHeaders);
+    console.log(`[Client] getTeams status=${res.status} data=${Array.isArray(res.data) ? `${res.data.length} teams` : JSON.stringify(res.data).slice(0, 200)}`);
     return res.data as Team[];
   }
 

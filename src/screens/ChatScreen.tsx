@@ -37,7 +37,7 @@ import {cache} from '../api/cache';
 import {theme, changeOpacity} from '../theme/utils';
 import {setActiveChannel, setCurrentUserId} from '../api/notifications';
 import {persistentStorage} from '../api/persistent-storage';
-import {openInBrowser} from '../utils/openLink';
+import {openInBrowser, shareText} from '../utils/openLink';
 import {openCalendarReminder} from '../utils/reminder';
 import {copyToClipboard} from '../utils/clipboard';
 
@@ -437,6 +437,11 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   // New messages never auto-scroll — the user scrolls down to see them.
   const loadPosts = useCallback(async (forceRefresh = false) => {
     const teamId = client.getTeamId() || '';
+    // Stale-response guard: capture the channel this load belongs to. If the
+    // user switches channels while requests are in flight, the late responses
+    // are discarded instead of overwriting the NEW channel's view (this was
+    // the "switched but nothing changed" rendering bug).
+    const loadChannelId = channel.id;
     try {
       // ── Resume from last-read cursor ──
       // If the user previously read this channel partway through history,
@@ -457,12 +462,11 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
       const cursorFresh = cursorSavedAt > 0 && Date.now() - cursorSavedAt < 24 * 60 * 60 * 1000;
       const resumeFromCursor = savedCursor && cursorFresh && !forceRefresh;
 
-      // Step 1: cached first-paint — ALWAYS render the cached window instantly
-      // (no spinner while the cursor fetch runs); the cursor window replaces
-      // it once fetched.
+      // Step 1: cached first-paint — only when NOT resuming (resuming renders
+      // the cursor window directly to avoid a newest→cursor flash).
       const cachedPostList = cache.getPosts(teamId, channel.id);
       let cachedNewestId: string | null = null;
-      if (cachedPostList && !forceRefresh) {
+      if (cachedPostList && !forceRefresh && !resumeFromCursor) {
         const windowed = renderPosts(trimToLatestPage(cachedPostList));
         cachedNewestId = windowed.length > 0 ? windowed[windowed.length - 1].id : null;
         if (windowed.length > 0) {
@@ -470,9 +474,7 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         }
         setHasEarlierPosts(hasOlderPosts(cachedPostList, windowed.length));
         setLoading(false);
-        if (!resumeFromCursor) {
-          beginEntryPositioning();
-        }
+        beginEntryPositioning();
       } else {
         setLoading(true);
       }
@@ -482,17 +484,20 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
       // Step 2: fetch the appropriate page — newest by default, or the window
       // after the saved read cursor when resuming.
       let postList: PostList;
+      let didResume = false;
       if (resumeFromCursor) {
         try {
           postList = await client.getPostsForChannel(channel.id, {
             page: 0,
-            per_page: 30,
+            per_page: 40,
             after: savedCursor,
           });
+          if (loadChannelId !== channel.id) return; // stale — user switched away
           // Include the cursor message itself as the scroll anchor.
           if (savedCursor && !postList.posts[savedCursor]) {
             try {
               const cursorPost = await client.getPost(savedCursor);
+              if (loadChannelId !== channel.id) return; // stale
               postList = {
                 ...postList,
                 posts: {...postList.posts, [savedCursor]: cursorPost},
@@ -502,7 +507,9 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
               // cursor post deleted — use what we have
             }
           }
-          if (Object.keys(postList.posts).length === 0) {
+          if (Object.keys(postList.posts).length > 0) {
+            didResume = true;
+          } else {
             // Nothing newer than the cursor (fully read) — fall back to the
             // newest page, positioned at the bottom like a fresh entry.
             postList = await client.getPostsForChannel(channel.id, {page: 0, per_page: 60});
@@ -513,6 +520,7 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
       } else {
         postList = await client.getPostsForChannel(channel.id, {page: 0, per_page: 60});
       }
+      if (loadChannelId !== channel.id) return; // stale — user switched away
       cache.setPosts(teamId, channel.id, postList);
 
       // Collect unique user IDs and fetch missing profiles
@@ -549,6 +557,7 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
       const freshNewestId = freshOrder.length > 0 ? freshOrder[0] : null;
 
       if (
+        !didResume &&
         cachedPostList &&
         !forceRefresh &&
         cachedNewestId !== null &&
@@ -558,8 +567,8 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         // bottom. Keep it in place (no re-render, no re-position → no flicker).
         setHasEarlierPosts(hasOlderPosts(postList, postsLengthRef.current));
       } else {
-        // No cache or newer messages since the cache: show the newest window
-        // and position at the newest message (unless the user already scrolled).
+        // Fresh window (resumed cursor position, or newer data than cache):
+        // render it and position at the bottom edge (unless already scrolled).
         const windowed = renderPosts(postList);
         if (windowed.length > 0) {
           earliestPostIdRef.current = windowed[0].id;
@@ -1429,8 +1438,14 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   // Tapping a message enters an inline "thread reply" mode: the composer
   // targets the ROOT of the tapped message's thread, so replies chain into
   // that thread (matching the Android app's click-to-reply-in-thread).
+  // While the keyboard is up and the user has typed, taps are ignored — they
+  // are usually scroll/settle gestures and accidentally changed the reply
+  // target mid-composition ("reply selection went missing").
   const handleMessageTap = (post: DisplayPost) => {
     setActionPost(null);
+    if (keyboardHeight > 0 && message.trim().length > 0) {
+      return; // composing — don't steal/replace the reply target
+    }
     const teamId = client.getTeamId() || '';
     const cachedPosts = cache.getPosts(teamId, channel.id);
     if (post.rootId) {
@@ -1516,6 +1531,17 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
     } finally {
       setForwardSending(false);
       setForwardPost(null);
+    }
+  };
+
+  const handleShare = async (post: DisplayPost) => {
+    setActionPost(null);
+    const serverUrl = client.getServerUrl();
+    // Share the message text + a permalink to the message.
+    const content = `${post.message}\n${serverUrl}/pl/${post.id}`;
+    const ok = await shareText('Mattermost', content);
+    if (!ok) {
+      Alert.alert('Share failed', 'Could not open the system share panel.');
     }
   };
 
@@ -1820,6 +1846,10 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         <Text style={styles.actionIcon}>↪️</Text>
         <Text style={styles.actionLabel}>Forward</Text>
       </TouchableOpacity>
+      <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handleShare(actionPost)}>
+        <Text style={styles.actionIcon}>📤</Text>
+        <Text style={styles.actionLabel}>Share</Text>
+      </TouchableOpacity>
       <TouchableOpacity style={styles.actionItem} onPress={() => actionPost && handleCopyText(actionPost)}>
         <Text style={styles.actionIcon}>📋</Text>
         <Text style={styles.actionLabel}>Copy Text</Text>
@@ -1878,6 +1908,7 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         {icon: '💬', label: 'Reply', onPress: () => actionPost && handleReply(actionPost)},
         {icon: '🧵', label: 'Thread', onPress: () => actionPost && handleViewThread(actionPost)},
         {icon: '↪️', label: 'Forward', onPress: () => actionPost && handleForward(actionPost)},
+        {icon: '📤', label: 'Share', onPress: () => actionPost && handleShare(actionPost)},
         {icon: '📋', label: 'Copy', onPress: () => actionPost && handleCopyText(actionPost)},
         {icon: '🔗', label: 'Link', onPress: () => actionPost && handleCopyLink(actionPost)},
         {icon: '😀', label: 'React', onPress: () => actionPost && setEmojiPickerPost(actionPost)},
@@ -2124,13 +2155,19 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         </View>
       ) : null}
 
-      {/* Reply / Edit hint — light bar shown only while the input is empty. */}
-      {(replyTo || editingPostId) && !message.trim() && (
+      {/* Reply / Edit hint — always visible while a target is selected (full
+          preview when the input is empty, compact title once typing) so the
+          user never loses sight of what they're replying to. */}
+      {(replyTo || editingPostId) && (
         <View style={styles.replyBanner}>
           <Text style={styles.replyBannerText} numberOfLines={1}>
             {editingPostId ? 'Editing: ' : 'Reply to: '}
             <Text style={styles.replyBannerContent}>
-              {editingPostId ? message : replyTo?.message}
+              {editingPostId
+                ? message
+                : message.trim()
+                  ? `${replyTo?.username || ''}`
+                  : replyTo?.message}
             </Text>
           </Text>
           <TouchableOpacity onPress={cancelEditing}>
@@ -2352,7 +2389,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingTop: 50,
+    // Status-bar inset handled by the enclosing SafeAreaView (both layouts);
+    // a fixed 50 here doubled up with the safe-area and broke on rotation.
+    paddingTop: 12,
     paddingBottom: 12,
     backgroundColor: theme.sidebarHeaderBg,
     borderBottomWidth: StyleSheet.hairlineWidth,
