@@ -35,7 +35,7 @@ export default function TopBar({client, onLogout, onChannelCreated}: Props) {
   return (
     <View style={styles.bar}>
       <View style={styles.left}>
-        <Text style={styles.title}>Mattermost</Text>
+        <Text style={styles.title}>Ripple</Text>
         <Text style={styles.user}>@{userName}</Text>
       </View>
       <View style={styles.right}>

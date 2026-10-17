@@ -1,7 +1,7 @@
 {
   "app": {
-    "bundleName": "com.example.mattermostharmony",
-    "vendor": "example",
+    "bundleName": "top.dreamsearch.ripple",
+    "vendor": "dreamsearch",
     "versionCode": 1000000,
     "versionName": "1.0.0",
     "buildVersion": "1",

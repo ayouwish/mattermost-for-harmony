@@ -12,6 +12,7 @@
  * invalidation.
  */
 import type {Channel, ChannelMember, Post, PostList, Team, ThreadsInboxResponse, UserProfile} from '../api/types';
+import {fcGetString, fcSetString, fcRemove, fcClearAll} from './fileCache';
 import {persistentStorage} from './persistent-storage';
 
 /**
@@ -58,6 +59,9 @@ class AppCache {
   private static readonly PERSIST_PREFIX = 'mmcache:';
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private persistKeys = new Set<string>();
+  // Short keys of blobs stored in the FileCache (display:/posts:/threads:/…),
+  // persisted to preferences as 'filekeys' so startup can enumerate them.
+  private fileKeyRegistry = new Set<string>();
 
   /** Schedule a persistence write (debounced) for the given logical key. */
   private schedulePersist(key: string): void {
@@ -73,6 +77,15 @@ class AppCache {
   }
 
   private persistNow(keys: string[]): void {
+    // Track which large keys live in the file cache so startup knows what to
+    // restore (append-only registry of display:/posts:/threads:/thread:/chaninfo:).
+    let registryDirty = false;
+    const registerFileKey = (shortKey: string) => {
+      if (!this.fileKeyRegistry.has(shortKey)) {
+        this.fileKeyRegistry.add(shortKey);
+        registryDirty = true;
+      }
+    };
     for (const key of keys) {
       try {
         if (key === 'teams') {
@@ -85,46 +98,54 @@ class AppCache {
           const teamId = key.slice('display:'.length);
           const entry = this.displayChannelsByTeam.get(teamId);
           if (entry) {
-            persistentStorage.setJSON(AppCache.PERSIST_PREFIX + 'display:' + teamId, {
-              data: entry.data,
-              loadedAt: entry.loadedAt,
-            });
+            // Large blob → file cache (preferences re-flushes its whole file
+            // on every write and made cold starts crawl).
+            fcSetString('display:' + teamId, JSON.stringify({data: entry.data, loadedAt: entry.loadedAt}));
+            registerFileKey('display:' + teamId);
           }
         } else if (key.startsWith('posts:')) {
           const channelId = key.slice('posts:'.length);
           const postList = this.findPostsByChannelId(channelId);
           if (postList) {
-            persistentStorage.setJSON(AppCache.PERSIST_PREFIX + 'posts:' + channelId, postList);
+            fcSetString('posts:' + channelId, JSON.stringify(postList));
+            registerFileKey('posts:' + channelId);
           }
         } else if (key.startsWith('threads:')) {
           const teamId = key.slice('threads:'.length);
           const entry = this.threadsByTeam.get(teamId);
           if (entry) {
-            persistentStorage.setJSON(AppCache.PERSIST_PREFIX + 'threads:' + teamId, {
-              data: entry.data,
-              loadedAt: entry.loadedAt,
-            });
+            fcSetString('threads:' + teamId, JSON.stringify({data: entry.data, loadedAt: entry.loadedAt}));
+            registerFileKey('threads:' + teamId);
           }
         } else if (key.startsWith('thread:')) {
           const rootId = key.slice('thread:'.length);
           const entry = this.threadPosts.get(rootId);
           if (entry) {
-            persistentStorage.setJSON(AppCache.PERSIST_PREFIX + 'thread:' + rootId, entry.data);
+            fcSetString('thread:' + rootId, JSON.stringify(entry.data));
+            registerFileKey('thread:' + rootId);
           }
         } else if (key.startsWith('chaninfo:')) {
           const channelId = key.slice('chaninfo:'.length);
           const entry = this.channelInfoByChannel.get(channelId);
           if (entry) {
-            persistentStorage.setJSON(AppCache.PERSIST_PREFIX + 'chaninfo:' + channelId, {
+            fcSetString('chaninfo:' + channelId, JSON.stringify({
               members: entry.members,
               pinned: entry.pinned,
               loadedAt: entry.loadedAt,
-            });
+            }));
+            registerFileKey('chaninfo:' + channelId);
           }
         }
       } catch {
         // ignore persistence errors
       }
+    }
+    if (registryDirty) {
+      // Persist the file-key registry so startup can enumerate the blobs.
+      persistentStorage.setString(
+        AppCache.PERSIST_PREFIX + 'filekeys',
+        JSON.stringify(Array.from(this.fileKeyRegistry)),
+      );
     }
   }
 
@@ -144,13 +165,24 @@ class AppCache {
     try {
       const p = AppCache.PERSIST_PREFIX;
 
-      const teams = await persistentStorage.getJSON<Team[]>(p + 'teams');
+      // LIGHTWEIGHT first: teams/users are small and always needed on entry.
+
+      const readVal = async <T>(key: string): Promise<T | null> => {
+        try {
+          return await persistentStorage.getJSON<T>(key);
+        } catch {
+          return null;
+        }
+      };
+
+      const [teams, users] = await Promise.all([
+        readVal<Array<Team>>(p + 'teams'),
+        readVal<Array<{profile: UserProfile; loadedAt: number}>>(p + 'users'),
+      ]);
       if (teams && teams.length > 0) {
         this.teams = teams;
         this.teamsLoadedAt = Date.now();
       }
-
-      const users = await persistentStorage.getJSON<Array<{profile: UserProfile; loadedAt: number}>>(p + 'users');
       if (users) {
         const now = Date.now();
         for (const u of users) {
@@ -160,37 +192,54 @@ class AppCache {
         }
       }
 
-      // Restore display channels + posts (scan known keys via getAllKeys)
-      const allKeys = await persistentStorage.getAllKeys();
-      for (const key of allKeys) {
-        if (key.startsWith(p + 'display:')) {
-          const teamId = key.slice((p + 'display:').length);
-          const val = await persistentStorage.getJSON<{data: DisplayChannelData[]; loadedAt: number}>(key);
-          if (val?.data) {
-            this.displayChannelsByTeam.set(teamId, {data: val.data, loadedAt: Date.now()});
+      // Heavy blobs (posts/threads/chaninfo/display) live in the FILE cache
+      // now — read them in parallel. Registered keys are tracked in a small
+      // preferences entry ('filekeys') so startup knows what to load.
+      const knownRaw = await persistentStorage.getString(p + 'filekeys', '[]');
+      let fileKeys: string[] = [];
+      try {
+        fileKeys = knownRaw ? (JSON.parse(knownRaw) as string[]) : [];
+      } catch {
+        fileKeys = [];
+      }
+      this.fileKeyRegistry = new Set(fileKeys);
+      const loaded = await Promise.all(
+        fileKeys.map(async (shortKey): Promise<[string, string | null]> => [
+          shortKey,
+          await fcGetString(shortKey),
+        ]),
+      );
+      for (const [shortKey, raw] of loaded) {
+        if (!raw) continue;
+        try {
+          const val = JSON.parse(raw);
+          if (shortKey.startsWith('display:')) {
+            const teamId = shortKey.slice('display:'.length);
+            if (val?.data) {
+              this.displayChannelsByTeam.set(teamId, {data: val.data, loadedAt: Date.now()});
+            }
+          } else if (shortKey.startsWith('posts:')) {
+            const channelId = shortKey.slice('posts:'.length);
+            if (val?.posts) {
+              this.setPosts('', channelId, val as PostList);
+            }
+          } else if (shortKey.startsWith('threads:')) {
+            const teamId = shortKey.slice('threads:'.length);
+            if (val?.data) {
+              this.threadsByTeam.set(teamId, {data: val.data, loadedAt: Date.now()});
+            }
+          } else if (shortKey.startsWith('chaninfo:')) {
+            const channelId = shortKey.slice('chaninfo:'.length);
+            if (val?.members) {
+              this.channelInfoByChannel.set(channelId, {
+                members: val.members,
+                pinned: val.pinned ?? [],
+                loadedAt: Date.now(),
+              });
+            }
           }
-        } else if (key.startsWith(p + 'posts:')) {
-          const channelId = key.slice((p + 'posts:').length);
-          const postList = await persistentStorage.getJSON<PostList>(key);
-          if (postList?.posts) {
-            this.setPosts('', channelId, postList);
-          }
-        } else if (key.startsWith(p + 'threads:')) {
-          const teamId = key.slice((p + 'threads:').length);
-          const val = await persistentStorage.getJSON<{data: ThreadsInboxResponse; loadedAt: number}>(key);
-          if (val?.data) {
-            this.threadsByTeam.set(teamId, {data: val.data, loadedAt: Date.now()});
-          }
-        } else if (key.startsWith(p + 'chaninfo:')) {
-          const channelId = key.slice((p + 'chaninfo:').length);
-          const val = await persistentStorage.getJSON<{members: ChannelMember[]; pinned: Post[]; loadedAt: number}>(key);
-          if (val?.members) {
-            this.channelInfoByChannel.set(channelId, {
-              members: val.members,
-              pinned: val.pinned ?? [],
-              loadedAt: Date.now(),
-            });
-          }
+        } catch {
+          // corrupt entry — skip
         }
       }
     } catch {
@@ -480,10 +529,12 @@ class AppCache {
     this.displayChannelsByTeam.clear();
     this.teams = null;
     this.teamsLoadedAt = 0;
+    this.fileKeyRegistry.clear();
     // Clear persisted cache
     const p = AppCache.PERSIST_PREFIX;
     persistentStorage.delete(p + 'teams');
     persistentStorage.delete(p + 'users');
+    persistentStorage.delete(p + 'filekeys');
     persistentStorage.getAllKeys().then((keys) => {
       for (const key of keys) {
         if (key.startsWith(p)) {
@@ -491,6 +542,8 @@ class AppCache {
         }
       }
     });
+    // Wipe the file-cache blobs too.
+    fcClearAll();
   }
 
   // For debugging

@@ -20,25 +20,20 @@ function getNativeModule(): any {
   try {
     nativeModule = TurboModuleRegistry.get('PersistentStorage');
     if (nativeModule) {
-      console.log('[PersistentStorage] Got module via TurboModuleRegistry');
       return nativeModule;
     }
   } catch (e) {
-    console.log('[PersistentStorage] TurboModuleRegistry.get failed:', e);
   }
 
   // Method 2: NativeModules fallback
   try {
     nativeModule = (NativeModules as any)?.PersistentStorage;
     if (nativeModule) {
-      console.log('[PersistentStorage] Got module via NativeModules');
       return nativeModule;
     }
   } catch (e) {
-    console.log('[PersistentStorage] NativeModules access failed:', e);
   }
 
-  console.log('[PersistentStorage] Module NOT FOUND — persistence disabled');
   nativeModule = null;
   return nativeModule;
 }
@@ -50,12 +45,10 @@ export const persistentStorage = {
   async getString(key: string, defaultValue: string = ''): Promise<string> {
     const mod = getNativeModule();
     if (!mod) {
-      console.log('[PersistentStorage] getString (mem):', key);
       return memStore[key] ?? defaultValue;
     }
     try {
       const result = await mod.getString(key);
-      console.log('[PersistentStorage] getString:', key, '=>', result ? '(found)' : '(empty)');
       return result || defaultValue;
     } catch (e) {
       console.log('[PersistentStorage] getString error:', key, e);
@@ -67,12 +60,10 @@ export const persistentStorage = {
     memStore[key] = value; // always keep in memory as cache
     const mod = getNativeModule();
     if (!mod) {
-      console.log('[PersistentStorage] setString (mem only):', key);
       return;
     }
     try {
       await mod.setString(key, value);
-      console.log('[PersistentStorage] setString OK:', key);
     } catch (e) {
       console.log('[PersistentStorage] setString error:', key, e);
     }

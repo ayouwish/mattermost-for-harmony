@@ -1,0 +1,167 @@
+{
+  "HVIGOR_OHOS_PLUGIN": {
+    "MODULES": [
+      {
+        "MODULE_NAME": "923fe53966c6cd9343e11af776cd4b05be315ea4b200b02e4d5dfb0f929b73bf",
+        "API_TYPE": "stageMode",
+        "INCLUDE_IN_BUILD": true,
+        "IS_COMMAND_LINE_ENTRY_MODULE": false,
+        "BUILD_OPTION": [
+          {
+            "path": "debuggable",
+            "traceValue": true,
+            "value": false
+          },
+          {
+            "path": "copyFrom",
+            "traceValue": false,
+            "value": ""
+          },
+          {
+            "path": "strictMode",
+            "traceValue": false,
+            "value": ""
+          },
+          {
+            "path": "strictMode.caseSensitiveCheck",
+            "traceValue": true,
+            "value": true
+          },
+          {
+            "path": "strictMode.useNormalizedOHMUrl",
+            "traceValue": true,
+            "value": true
+          },
+          {
+            "path": "resOptions",
+            "traceValue": false,
+            "value": ""
+          },
+          {
+            "path": "resOptions.copyCodeResource",
+            "traceValue": false,
+            "value": ""
+          },
+          {
+            "path": "resOptions.copyCodeResource.enable",
+            "traceValue": true,
+            "value": false
+          },
+          {
+            "path": "externalNativeOptions",
+            "traceValue": false,
+            "value": ""
+          },
+          {
+            "path": "externalNativeOptions.path",
+            "traceValue": false,
+            "value": ""
+          },
+          {
+            "path": "externalNativeOptions.arguments",
+            "traceValue": false,
+            "value": ""
+          },
+          {
+            "path": "externalNativeOptions.cppFlags",
+            "traceValue": false,
+            "value": ""
+          },
+          {
+            "path": "externalNativeOptions.abiFilters",
+            "traceValue": true,
+            "value": [
+              "arm64-v8a"
+            ]
+          },
+          {
+            "path": "arkOptions",
+            "traceValue": false,
+            "value": ""
+          },
+          {
+            "path": "arkOptions.obfuscation",
+            "traceValue": false,
+            "value": ""
+          },
+          {
+            "path": "arkOptions.obfuscation.ruleOptions",
+            "traceValue": false,
+            "value": ""
+          },
+          {
+            "path": "arkOptions.obfuscation.ruleOptions.enable",
+            "traceValue": true,
+            "value": false
+          },
+          {
+            "path": "arkOptions.obfuscation.ruleOptions.files",
+            "traceValue": false,
+            "value": ""
+          }
+        ],
+        "PACKAGE_JSON": [],
+        "MODULE_TYPE": "entry",
+        "INCREMENTAL_TASKS": {
+          "BUILD_NATIVE_WITH_CMAKE": true
+        },
+        "IS_INCREMENTAL_MODULE": true
+      }
+    ],
+    "NATIVE_COMPILER": "BiSheng",
+    "IS_FULL_BUILD": false,
+    "PACKAGE_JSON": [],
+    "BUILD_MODE": "release"
+  },
+  "HVIGOR": {
+    "IS_INCREMENTAL": true,
+    "IS_DAEMON": false,
+    "IS_PARALLEL": true,
+    "IS_HVIGORFILE_TYPE_CHECK": false,
+    "IS_EXECUTION_OHPM_BY_HVIGOR": false,
+    "BUILD_ANALYSIS_MODE": "normal",
+    "TASK_TIME": {
+      "APP": {
+        "PreBuildApp": 707300,
+        "DuplicateDependencyCheck": 265100,
+        "PackageApp": 1080738700,
+        "SignPackagesFromApp": 3518400,
+        "SignApp": 1335591800,
+        "assembleApp": 205500
+      },
+      "923fe53966c6cd9343e11af776cd4b05be315ea4b200b02e4d5dfb0f929b73bf": {
+        "CreateModuleInfo": 750700,
+        "ConfigureCmake": 24270900,
+        "PreCheckSyscap": 324000,
+        "GeneratePkgSdkInfo": 4102600,
+        "ProcessIntegratedHsp": 641700,
+        "BuildNativeWithCmake": 335866500,
+        "SyscapTransform": 13451300,
+        "ProcessStartupConfig": 3562100,
+        "BuildJS": 4629500,
+        "BuildNativeWithNinja": 24959305400,
+        "ProcessLibs": 545114000,
+        "DoNativeStrip": 144972300,
+        "CacheNativeLibs": 14463600,
+        "ProcessCompiledResources": 563500,
+        "PackageHap": 498770700,
+        "PackingCheck": 7584800,
+        "SignHap": 2575201000,
+        "CollectDebugSymbol": 9374600,
+        "assembleHap": 197400
+      }
+    },
+    "CUSTOM_TASK_TIME": {},
+    "CUSTOM_PLUGIN_TIME": {},
+    "APIS": [
+      "getProperty"
+    ],
+    "CONFIG_EXPERIMENT": {
+      "ENABLE_MODULE_SKIP": false,
+      "ENABLE_CPP_FUNCTION_LEVEL_INCREMENTAL": false
+    },
+    "CONFIG_PROPERTIES": {},
+    "BUILD_ID": "202610180056342840",
+    "TOTAL_TIME": 34572528600
+  }
+}

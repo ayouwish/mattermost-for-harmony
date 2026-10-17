@@ -169,7 +169,7 @@ export default function LoginScreen({onLogin}: Props) {
         style={styles.container}
         behavior={'height'}>
         <View style={styles.header}>
-          <Text style={styles.title}>Mattermost</Text>
+          <Text style={styles.title}>Ripple</Text>
           <Text style={styles.subtitle}>Connect to your server</Text>
         </View>
 

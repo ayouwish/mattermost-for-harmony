@@ -44,22 +44,27 @@ export default function SavedMessagesScreen({client, onBack, onOpenChannel, inPa
         .filter((p) => p.category === 'flagged_post' && p.value === 'true')
         .map((p) => p.name)
         .filter((id) => !!id);
+      console.log(`[Saved] prefs=${prefs.length} categories=${[...new Set(prefs.map((p) => p.category))].join('|')} flagged=${flaggedIds.length}`);
 
-      const result: SavedRow[] = [];
-      for (const id of flaggedIds) {
-        try {
-          const post: Post = await client.getPost(id);
-          if (post && post.delete_at === 0) {
-            const author = cache.getUser(post.user_id) ||
+      // Fetch posts in parallel (serial per-post requests made the screen crawl
+      // once more than a few messages were saved).
+      const results = await Promise.all(
+        flaggedIds.map(async (id): Promise<SavedRow | null> => {
+          try {
+            const post: Post = await client.getPost(id);
+            if (!post || post.delete_at !== 0) return null;
+            const author =
+              cache.getUser(post.user_id) ||
               (await client.getUser(post.user_id).catch(() => undefined));
             if (author) cache.setUser(author);
             const channel = await client.getChannel(post.channel_id).catch(() => undefined);
-            result.push({post, author, channel});
+            return {post, author, channel};
+          } catch {
+            return null; // deleted / no permission — skip
           }
-        } catch {
-          // skip posts that can't be fetched (deleted / no permission)
-        }
-      }
+        }),
+      );
+      const result = results.filter((r): r is SavedRow => r !== null);
       result.sort((a, b) => b.post.create_at - a.post.create_at);
       setRows(result);
     } catch {

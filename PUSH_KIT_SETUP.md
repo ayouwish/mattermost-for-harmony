@@ -19,7 +19,7 @@
 - [ ] 我的项目 → 新建项目（或选已有项目）
 - [ ] 在项目下**添加应用**：
   - 平台：**HarmonyOS**
-  - 应用包名：**`com.example.mattermostharmony`**（必须与工程一致）
+  - 应用包名：**`top.dreamsearch.ripple`**（必须与工程一致）
   - 应用名称：Mattermost HarmonyOS
 
 ---

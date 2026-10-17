@@ -6,9 +6,12 @@
  */
 
 export * from "./MattermostClipboard"
+export * from "./FileCache"
 export * from "./ImageCache"
+export * from "./MediaPicker"
 export * from "./Notifications"
 export * from "./PersistentStorage"
 export * from "./Push"
 export * from "./Reminder"
 export * from "./SystemOpen"
+export * from "./Upload"

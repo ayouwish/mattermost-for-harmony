@@ -27,6 +27,7 @@ import PostActionMenu from '../components/PostActionMenu';
 import {formatTime} from '../utils/dateFormat';
 import {theme, changeOpacity} from '../theme/utils';
 import {openInBrowser, shareText} from '../utils/openLink';
+import {persistentStorage} from '../api/persistent-storage';
 import {copyToClipboard} from '../utils/clipboard';
 import {openCalendarReminder} from '../utils/reminder';
 
@@ -708,7 +709,7 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
   const handleRemind = async (post: DisplayReply) => {
     setActionReply(null);
     const snippet = post.message.replace(/\s+/g, ' ').slice(0, 120) || `${post.username}'s message`;
-    const result = await openCalendarReminder('Mattermost reminder', snippet);
+    const result = await openCalendarReminder('Ripple reminder', snippet);
     if (result === 'permission_denied') {
       Alert.alert('Calendar permission needed', 'Grant calendar access in Settings to use reminders.');
     } else if (result !== 'ok') {
@@ -720,7 +721,7 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
     setActionReply(null);
     const serverUrl = client.getServerUrl();
     const content = `${post.message}\n${serverUrl}/pl/${post.id}`;
-    const ok = await shareText('Mattermost', content);
+    const ok = await shareText('Ripple', content);
     if (!ok) {
       Alert.alert('Share failed', 'Could not open the system share panel.');
     }
@@ -748,6 +749,43 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
   };
 
   // Menu items for the currently long-pressed reply.
+  // Thread pin (local, shows at top of Threads inbox).
+  const [threadPinned, setThreadPinned] = useState(false);
+  useEffect(() => {
+    persistentStorage.getString('pinnedThreads', '').then((raw) => {
+      if (raw) {
+        try {
+          const arr = JSON.parse(raw) as string[];
+          setThreadPinned(arr.includes(effectiveRoot.id));
+        } catch {
+          // ignore
+        }
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveRoot.id]);
+  const toggleThreadPin = useCallback(() => {
+    setActionReply(null);
+    setThreadPinned((prev) => {
+      const next = !prev;
+      persistentStorage.getString('pinnedThreads', '').then((raw) => {
+        let arr: string[] = [];
+        try {
+          arr = raw ? (JSON.parse(raw) as string[]) : [];
+        } catch {
+          arr = [];
+        }
+        if (next) {
+          if (!arr.includes(effectiveRoot.id)) arr.push(effectiveRoot.id);
+        } else {
+          arr = arr.filter((id) => id !== effectiveRoot.id);
+        }
+        persistentStorage.setString('pinnedThreads', JSON.stringify(arr)).catch(() => {});
+      });
+      return next;
+    });
+  }, [effectiveRoot.id]);
+
   const actionItems = useMemo(() => {
     const post = actionReply;
     if (!post) return [] as Array<{icon: string; label: string; onPress: () => void; danger?: boolean}>;
@@ -759,6 +797,7 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
       {icon: '🔖', label: savedPostIds.has(post.id) ? 'Unsave' : 'Save', onPress: () => handleSave(post)},
       {icon: '⏰', label: 'Remind', onPress: () => handleRemind(post)},
       {icon: '📍', label: 'Pin', onPress: () => handlePin(post)},
+      {icon: threadPinned ? '📌' : '🏷️', label: threadPinned ? 'Unpin Thread' : 'Pin Thread', onPress: () => toggleThreadPin()},
       {icon: '🚫', label: 'Unfollow', onPress: () => handleUnfollow()},
       {icon: '🔵', label: 'Unread', onPress: () => handleMarkUnread(post)},
     ];
@@ -768,7 +807,7 @@ export default function ThreadScreen({client, channel, rootPost, onClose, onMenu
     }
     return items;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actionReply, savedPostIds]);
+  }, [actionReply, savedPostIds, threadPinned]);
 
   const renderReply = ({item}: {item: DisplayReply}) => {
     const profile = userProfiles[item.userId];

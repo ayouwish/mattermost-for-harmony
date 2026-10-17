@@ -1,0 +1,267 @@
+{
+  "version": 1,
+  "ohos-module-entry": {
+    "SELECT_TARGET": "default",
+    "MODULE_BUILD_DIR": "F:\\code\\MattermostHarmony\\entry\\build",
+    "TARGETS": {
+      "default": {
+        "SOURCE_ROOT": "F:\\code\\MattermostHarmony\\entry\\src\\main",
+        "RESOURCES_PATH": [
+          "F:\\code\\MattermostHarmony\\entry\\src\\main\\resources"
+        ],
+        "BUILD_PATH": {
+          "OUTPUT_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\outputs\\default",
+          "INTERMEDIA_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates",
+          "JS_ASSETS_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\loader_out\\default",
+          "JS_LITE_ASSETS_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\loader_out_lite\\default",
+          "RES_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\res\\default",
+          "RES_PROFILE_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\res\\default\\resources\\base\\profile",
+          "ETS_SUPER_VISUAL_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\cache\\default\\default@CompileArkTS\\esmodule",
+          "JS_SUPER_VISUAL_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\cache\\default\\default@CompileJS\\jsbundle",
+          "WORKER_LOADER": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\loader\\default\\loader.json",
+          "MANIFEST_JSON": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\manifest\\default",
+          "OUTPUT_METADATA_JSON": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\hap_metadata\\default\\output_metadata.json",
+          "SOURCE_MAP_DIR": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\source_map\\default"
+        },
+        "BUILD_OPTION": {
+          "debuggable": false
+        }
+      },
+      "ohosTest": {
+        "SOURCE_ROOT": "F:\\code\\MattermostHarmony\\entry\\src\\ohosTest",
+        "RESOURCES_PATH": [
+          "F:\\code\\MattermostHarmony\\entry\\src\\ohosTest\\resources"
+        ],
+        "BUILD_PATH": {
+          "OUTPUT_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\outputs\\ohosTest",
+          "INTERMEDIA_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates",
+          "JS_ASSETS_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\loader_out\\ohosTest",
+          "JS_LITE_ASSETS_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\loader_out_lite\\ohosTest",
+          "RES_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\res\\ohosTest",
+          "RES_PROFILE_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\res\\ohosTest\\resources\\base\\profile",
+          "ETS_SUPER_VISUAL_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\cache\\ohosTest\\ohosTest@OhosTestCompileArkTS\\esmodule",
+          "JS_SUPER_VISUAL_PATH": "F:\\code\\MattermostHarmony\\entry\\build\\default\\cache\\ohosTest\\ohosTest@OhosTestCompileJS\\jsbundle",
+          "WORKER_LOADER": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\loader\\ohosTest\\loader.json",
+          "MANIFEST_JSON": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\manifest\\ohosTest",
+          "OUTPUT_METADATA_JSON": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\hap_metadata\\ohosTest\\output_metadata.json",
+          "SOURCE_MAP_DIR": "F:\\code\\MattermostHarmony\\entry\\build\\default\\intermediates\\source_map\\ohosTest"
+        },
+        "BUILD_OPTION": {
+          "debuggable": true
+        }
+      }
+    },
+    "BUILD_OPTION": {
+      "default-default": {
+        "debuggable": false,
+        "copyFrom": "default",
+        "strictMode": {
+          "caseSensitiveCheck": true,
+          "useNormalizedOHMUrl": true
+        },
+        "nativeCompiler": "BiSheng",
+        "resOptions": {
+          "copyCodeResource": {
+            "enable": false
+          }
+        },
+        "externalNativeOptions": {
+          "path": "./src/main/cpp/CMakeLists.txt",
+          "arguments": "",
+          "cppFlags": "",
+          "abiFilters": [
+            "arm64-v8a"
+          ]
+        },
+        "name": "release",
+        "arkOptions": {
+          "obfuscation": {
+            "ruleOptions": {
+              "enable": false,
+              "files": [
+                "./obfuscation-rules.txt"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "BUILD_PROFILE_OPT": {
+      "apiType": "stageMode",
+      "buildOption": {
+        "resOptions": {
+          "copyCodeResource": {
+            "enable": false
+          }
+        },
+        "externalNativeOptions": {
+          "path": "./src/main/cpp/CMakeLists.txt",
+          "arguments": "",
+          "cppFlags": "",
+          "abiFilters": [
+            "arm64-v8a"
+          ]
+        }
+      },
+      "buildOptionSet": [
+        {
+          "name": "release",
+          "arkOptions": {
+            "obfuscation": {
+              "ruleOptions": {
+                "enable": false,
+                "files": [
+                  "./obfuscation-rules.txt"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "default"
+        },
+        {
+          "name": "debug"
+        }
+      ],
+      "targets": [
+        {
+          "name": "default"
+        },
+        {
+          "name": "ohosTest"
+        }
+      ]
+    },
+    "BUILD_CACHE_DIR": ""
+  },
+  "ohos-project": {
+    "SELECT_PRODUCT_NAME": "default",
+    "MODULE_BUILD_DIR": "F:\\code\\MattermostHarmony\\build",
+    "BUNDLE_NAME": "top.dreamsearch.ripple",
+    "VERSION_CODE": 1000001,
+    "VERSION_NAME": "1.0.0",
+    "BUILD_VERSION": "1",
+    "BUILD_PATH": {
+      "OUTPUT_PATH": "F:\\code\\MattermostHarmony\\build\\outputs\\default"
+    },
+    "MODULES": [
+      {
+        "name": "entry",
+        "srcPath": "F:\\code\\MattermostHarmony\\entry",
+        "targets": [
+          {
+            "name": "default",
+            "applyToProducts": [
+              "default"
+            ]
+          }
+        ],
+        "belongProjectPath": "F:\\code\\MattermostHarmony"
+      }
+    ],
+    "PROFILE_OPT": {
+      "app": {
+        "signingConfigs": [
+          {
+            "name": "default",
+            "type": "HarmonyOS",
+            "material": {
+              "certpath": "C:\\Users\\wangsimeng\\.ohos\\config\\default_MattermostHarmony_H49uD6NyXR9erkl0bWKiqWvK_JV6FuSgi6k2NSC2mJM=.cer",
+              "keyAlias": "debugKey",
+              "keyPassword": "0000001ABD1764FEEA9A2E33609C6D8CA88B683D0D8C6D34F267386CFCD6F5E5BE93E1CFD1F1D9D1810A",
+              "profile": "C:\\Users\\wangsimeng\\.ohos\\config\\default_MattermostHarmony_H49uD6NyXR9erkl0bWKiqWvK_JV6FuSgi6k2NSC2mJM=.p7b",
+              "signAlg": "SHA256withECDSA",
+              "storeFile": "C:\\Users\\wangsimeng\\.ohos\\config\\default_MattermostHarmony_H49uD6NyXR9erkl0bWKiqWvK_JV6FuSgi6k2NSC2mJM=.p12",
+              "storePassword": "0000001A3280DA440D34631B0B8A37D3BAFE68FD82853B858385BFBCD7586FDA9D18DC8C91616F347C92"
+            }
+          },
+          {
+            "name": "release",
+            "type": "HarmonyOS",
+            "material": {
+              "storeFile": "F:/code/MattermostHarmony/ripple-release.p12",
+              "storePassword": "0000001BC69B79AEB578E918611658A6C24BB0B56CA505D88A0C00983B5996DB1E85BAB135510C483DFA76",
+              "keyAlias": "ripple",
+              "keyPassword": "0000001B889830248B0A15860177B1F03A3DBADBF14161A7EFFB19148247B360F750EB7FE553F220D93286",
+              "signAlg": "SHA256withECDSA",
+              "profile": "F:/code/MattermostHarmony/ripple-release-profileRelease.p7b",
+              "certpath": "F:/code/MattermostHarmony/ripple-release.cer"
+            }
+          },
+          {
+            "name": "online",
+            "type": "HarmonyOS",
+            "material": {
+              "certpath": "C:\\Users\\wangsimeng\\.ohos\\config\\online_MattermostHarmony_H49uD6NyXR9erkl0bWKiqWvK_JV6FuSgi6k2NSC2mJM=.cer",
+              "keyAlias": "debugKey",
+              "keyPassword": "0000001B2C388F1A7EE253BEC74208C9B1906D890C55FC9C9F01CA2AA3350E35FDEA27C654FBAC1E963358",
+              "profile": "C:\\Users\\wangsimeng\\.ohos\\config\\online_MattermostHarmony_H49uD6NyXR9erkl0bWKiqWvK_JV6FuSgi6k2NSC2mJM=.p7b",
+              "signAlg": "SHA256withECDSA",
+              "storeFile": "C:\\Users\\wangsimeng\\.ohos\\config\\online_MattermostHarmony_H49uD6NyXR9erkl0bWKiqWvK_JV6FuSgi6k2NSC2mJM=.p12",
+              "storePassword": "0000001B5DD2FE919FDDDE2010AADD9BDB19D367079D64CC1BA8C36E539738E9ECF43F98ACA2CC397508BC"
+            }
+          }
+        ],
+        "products": [
+          {
+            "name": "default",
+            "signingConfig": "release",
+            "targetSdkVersion": "6.1.0(23)",
+            "compatibleSdkVersion": "6.1.0(23)",
+            "runtimeOS": "HarmonyOS",
+            "buildOption": {
+              "strictMode": {
+                "caseSensitiveCheck": true,
+                "useNormalizedOHMUrl": true
+              },
+              "nativeCompiler": "BiSheng"
+            }
+          }
+        ],
+        "buildModeSet": [
+          {
+            "name": "debug"
+          },
+          {
+            "name": "release"
+          }
+        ],
+        "capabilities": [
+          {
+            "bundleName": "top.dreamsearch.ripple",
+            "config": [
+              {
+                "name": "Push Kit",
+                "capability": "com.huawei.service.push.base_service"
+              }
+            ]
+          }
+        ]
+      },
+      "modules": [
+        {
+          "name": "entry",
+          "srcPath": "./entry",
+          "targets": [
+            {
+              "name": "default",
+              "applyToProducts": [
+                "default"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "CONFIG_PROPERTIES": {
+      "enableSignTask": true,
+      "skipNativeIncremental": false,
+      "hvigor.keepDependency": true
+    },
+    "OVERALL_PROJECT_PATHS": [
+      "F:\\code\\MattermostHarmony"
+    ],
+    "BUILD_CACHE_DIR": ""
+  }
+}

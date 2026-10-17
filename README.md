@@ -90,7 +90,7 @@ hvigorw assembleApp -p buildMode=debug
 
 ### 应用标识
 
-默认 bundleName 为 `com.example.mattermostharmony`（`AppScope/app.json5`），发布前请替换为自己的包名。
+默认 bundleName 为 `top.dreamsearch.ripple`（`AppScope/app.json5`），发布前请替换为自己的包名。
 
 ## 相关文档
 

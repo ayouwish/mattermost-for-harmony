@@ -6,6 +6,9 @@ import { ImageCacheTurboModule } from './ImageCacheTurboModule';
 import { SystemOpenTurboModule } from './SystemOpenTurboModule';
 import { ReminderTurboModule } from './ReminderTurboModule';
 import { ClipboardTurboModule } from './ClipboardTurboModule';
+import { FileCacheTurboModule } from './FileCacheTurboModule';
+import { MediaPickerTurboModule } from './MediaPickerTurboModule';
+import { UploadTurboModule } from './UploadTurboModule';
 
 class MattermostPackage extends RNPackage {
   getUITurboModuleFactoryByNameMap(): Map<string, (ctx: UITurboModuleContext) => TurboModule | null> {
@@ -30,6 +33,15 @@ class MattermostPackage extends RNPackage {
       }],
       [ClipboardTurboModule.NAME, (ctx: UITurboModuleContext) => {
         return new ClipboardTurboModule(ctx);
+      }],
+      [FileCacheTurboModule.NAME, (ctx: UITurboModuleContext) => {
+        return new FileCacheTurboModule(ctx);
+      }],
+      [MediaPickerTurboModule.NAME, (ctx: UITurboModuleContext) => {
+        return new MediaPickerTurboModule(ctx);
+      }],
+      [UploadTurboModule.NAME, (ctx: UITurboModuleContext) => {
+        return new UploadTurboModule(ctx);
       }],
     ]);
   }

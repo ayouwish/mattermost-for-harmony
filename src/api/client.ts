@@ -608,11 +608,20 @@ export class MattermostClient {
   // ── Preferences ──
 
   async getPreferences(): Promise<Preference[]> {
-    const res = await this.http.get(
-      `${this.urlVersion}/preferences`,
-      this.authHeaders,
-    );
-    return res.data as Preference[];
+    // Page through ALL preferences — the default page size can truncate the
+    // list (flagged_post entries live mixed in with dozens of other
+    // categories), which made desktop-saved messages invisible on mobile.
+    const all: Preference[] = [];
+    for (let page = 0; page < 10; page++) {
+      const res = await this.http.get(
+        `${this.urlVersion}/preferences?page=${page}&per_page=200&sort=all`,
+        this.authHeaders,
+      );
+      const batch = Array.isArray(res.data) ? (res.data as Preference[]) : [];
+      all.push(...batch);
+      if (batch.length < 200) break; // last page
+    }
+    return all;
   }
 
   async savePreferences(prefs: Preference[]): Promise<void> {
@@ -804,6 +813,7 @@ export class MattermostClient {
 
       this.ws.onopen = () => {
         console.log('[MattermostClient] WebSocket connected');
+        this.notifyConnectionState('connected');
         // Send authentication_challenge as belt-and-suspenders
         const authMsg = {
           seq: this.wsSeq++,
@@ -831,6 +841,7 @@ export class MattermostClient {
       this.ws.onclose = () => {
         console.log('[MattermostClient] WebSocket disconnected');
         this.ws = null;
+        this.notifyConnectionState('disconnected');
         this.scheduleReconnect();
       };
 
@@ -839,8 +850,35 @@ export class MattermostClient {
       };
     } catch (error) {
       console.error('[MattermostClient] WebSocket connection failed:', error);
+      this.notifyConnectionState('disconnected');
       this.scheduleReconnect();
     }
+  }
+
+  // ── Connection state (for the "connection lost" banner) ──
+  private connectionListeners = new Set<(state: 'connected' | 'disconnected' | 'reconnecting') => void>();
+
+  private notifyConnectionState(state: 'connected' | 'disconnected' | 'reconnecting'): void {
+    for (const fn of this.connectionListeners) {
+      try {
+        fn(state);
+      } catch {
+        // listener errors must not break the client
+      }
+    }
+  }
+
+  /**
+   * Subscribes to WebSocket connection-state changes. Returns an unsubscribe
+   * function (same pattern as onWsEvent).
+   */
+  onConnectionChange(
+    handler: (state: 'connected' | 'disconnected' | 'reconnecting') => void,
+  ): () => void {
+    this.connectionListeners.add(handler);
+    return () => {
+      this.connectionListeners.delete(handler);
+    };
   }
 
   disconnectWebSocket(): void {
@@ -926,6 +964,7 @@ export class MattermostClient {
     if (this.wsReconnectTimer) {
       return;
     }
+    this.notifyConnectionState('reconnecting');
     this.wsReconnectTimer = setTimeout(() => {
       this.wsReconnectTimer = null;
       if (!this.ws && this.token) {

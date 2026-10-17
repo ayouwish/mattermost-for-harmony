@@ -23,6 +23,7 @@ import {WebSocketEvents} from '../api/types';
 import {Avatar} from '../components';
 import {formatTimeOrDate} from '../utils/dateFormat';
 import {theme, changeOpacity} from '../theme/utils';
+import {persistentStorage} from '../api/persistent-storage';
 import {cache} from '../api/cache';
 
 interface Props {
@@ -42,6 +43,50 @@ interface InboxEntry {
 export default function ThreadsInboxScreen({client, onClose, onOpenThread, onMenu, inPane = false}: Props) {
   const imageHeaders = useMemo(() => client.getImageRequestHeaders(), [client]);
   const [entries, setEntries] = useState<InboxEntry[]>([]);
+  // Locally pinned thread ids (survives restarts): important topics stay at
+  // the top of the inbox for ongoing conversations.
+  const [pinnedThreads, setPinnedThreads] = useState<Set<string>>(new Set());
+
+  // Load pinned thread ids once on mount.
+  useEffect(() => {
+    persistentStorage.getString('pinnedThreads', '').then((raw) => {
+      if (raw) {
+        try {
+          const arr = JSON.parse(raw) as string[];
+          setPinnedThreads(new Set(arr));
+        } catch {
+          // ignore malformed
+        }
+      }
+    });
+  }, []);
+
+  const togglePinThread = useCallback((threadId: string) => {
+    setPinnedThreads((prev) => {
+      const next = new Set(prev);
+      if (next.has(threadId)) {
+        next.delete(threadId);
+      } else {
+        next.add(threadId);
+      }
+      persistentStorage.setString('pinnedThreads', JSON.stringify(Array.from(next))).catch(() => {});
+      return next;
+    });
+  }, []);
+
+  // Re-sort whenever pins change (no refetch needed).
+  useEffect(() => {
+    setEntries((prev) =>
+      [...prev].sort((a, b) => {
+        const aPin = pinnedThreads.has(a.thread.id) ? 1 : 0;
+        const bPin = pinnedThreads.has(b.thread.id) ? 1 : 0;
+        if (aPin !== bPin) return bPin - aPin;
+        if (a.thread.unread_mentions > 0 && b.thread.unread_mentions === 0) return -1;
+        if (a.thread.unread_replies > 0 && b.thread.unread_replies === 0) return -1;
+        return (b.thread.last_reply_at || 0) - (a.thread.last_reply_at || 0);
+      }),
+    );
+  }, [pinnedThreads]);
   const [totalUnread, setTotalUnread] = useState(0);
   const [totalMentions, setTotalMentions] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -88,6 +133,10 @@ export default function ThreadsInboxScreen({client, onClose, onOpenThread, onMen
           channel: t.post ? channelMap[t.post.channel_id] : undefined,
         }))
         .sort((a, b) => {
+          // Pinned threads always first.
+          const aPin = pinnedThreads.has(a.thread.id) ? 1 : 0;
+          const bPin = pinnedThreads.has(b.thread.id) ? 1 : 0;
+          if (aPin !== bPin) return bPin - aPin;
           if (a.thread.unread_mentions > 0 && b.thread.unread_mentions === 0) return -1;
           if (a.thread.unread_replies > 0 && b.thread.unread_replies === 0) return -1;
           return (b.thread.last_reply_at || 0) - (a.thread.last_reply_at || 0);
@@ -218,6 +267,7 @@ export default function ThreadsInboxScreen({client, onClose, onOpenThread, onMen
     return (
       <TouchableOpacity
         style={[styles.row, hasUnread && styles.rowUnread]}
+        onLongPress={() => togglePinThread(thread.id)}
         onPress={() => {
           const t = thread.post;
           if (t) {
@@ -247,6 +297,7 @@ export default function ThreadsInboxScreen({client, onClose, onOpenThread, onMen
         <View style={styles.content}>
           <View style={styles.topRow}>
             <Text style={[styles.authorName, hasUnread && styles.bold]} numberOfLines={1}>
+              {pinnedThreads.has(thread.id) ? '📌 ' : ''}
               {author?.username || 'Unknown'}
             </Text>
             <Text style={styles.time}>

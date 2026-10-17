@@ -15,6 +15,7 @@ import {cache} from './api/cache';
 import {persistentStorage, STORAGE_KEYS} from './api/persistent-storage';
 import {theme} from './theme/utils';
 import TopBar from './components/TopBar';
+import ConnectionBanner from './components/ConnectionBanner';
 import LoginScreen from './screens/LoginScreen';
 import ChannelListScreen from './screens/ChannelListScreen';
 import ChatScreen from './screens/ChatScreen';
@@ -41,6 +42,8 @@ type Screen =
 export default function App() {
   const [client, setClient] = useState<MattermostClient | null>(null);
   const [screen, setScreen] = useState<Screen>({name: 'login'});
+  // WebSocket connection state — drives the "connection lost" banner.
+  const [connState, setConnState] = useState<'connected' | 'disconnected' | 'reconnecting'>('connected');
   // When true, the chat screen was opened from the Threads Inbox, so back
   // should return to the threads page instead of the channel list.
   const [chatFromThreads, setChatFromThreads] = useState(false);
@@ -68,6 +71,9 @@ export default function App() {
       console.log('[App] Session expired (401) — forcing logout');
       handleLogout();
     });
+    // Track WS connection state for the banner.
+    const unsub = client.onConnectionChange(setConnState);
+    return unsub;
   }, [client]);
 
   const handleLogin = (newClient: MattermostClient) => {
@@ -174,6 +180,7 @@ export default function App() {
         <MainLayout
         client={client}
         screen={screen}
+        connState={connState}
         onSelectChannel={(channel: Channel) => {
           setChatFromThreads(false);
           setScreen({name: 'chat', channel});
@@ -219,6 +226,7 @@ export default function App() {
       <PhoneNavigator
       client={client}
       screen={screen}
+      connState={connState}
       chatFromThreads={chatFromThreads}
       onSelectChannel={(channel: Channel) => openChannel(channel, false)}
       onOpenThreadFromInbox={(rootPostId: string, channelId: string) => {
@@ -315,6 +323,7 @@ function SidebarDrawer({
 function MainLayout({
   client,
   screen,
+  connState,
   onSelectChannel,
   onOpenThreadFromInbox,
   onOpenThread,
@@ -328,6 +337,7 @@ function MainLayout({
 }: {
   client: MattermostClient;
   screen: Screen;
+  connState: 'connected' | 'disconnected' | 'reconnecting';
   onSelectChannel: (channel: Channel) => void;
   onOpenThreadFromInbox: (rootPostId: string, channelId: string) => void;
   onOpenThread: (channel: Channel, rootPost: Post) => void;
@@ -347,6 +357,7 @@ function MainLayout({
         onLogout={onLogout}
         onChannelCreated={onSelectChannel}
       />
+      <ConnectionBanner state={connState} />
       <View style={styles.wideLayout}>
         <View style={styles.sidebar}>
           <ChannelListScreen
@@ -431,6 +442,7 @@ function MainLayout({
 function PhoneNavigator({
   client,
   screen,
+  connState,
   chatFromThreads,
   onSelectChannel,
   onOpenThreadFromInbox,
@@ -445,6 +457,7 @@ function PhoneNavigator({
   client: MattermostClient;
   screen: Screen;
   chatFromThreads: boolean;
+  connState: 'connected' | 'disconnected' | 'reconnecting';
   onSelectChannel: (channel: Channel) => void;
   onOpenThreadFromInbox: (rootPostId: string, channelId: string) => void;
   onOpenThread: (channel: Channel, rootPost: Post) => void;
@@ -465,6 +478,7 @@ function PhoneNavigator({
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={theme.sidebarBg} />
+      <ConnectionBanner state={connState} />
 
       {screen.name === 'channels' ? (
         <ChannelListScreen

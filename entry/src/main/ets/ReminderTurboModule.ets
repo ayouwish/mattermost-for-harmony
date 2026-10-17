@@ -80,7 +80,7 @@ export class ReminderTurboModule extends TurboModule {
     try {
       const now = Date.now();
       const event: calendarManager.Event = {
-        title: title || 'Mattermost reminder',
+        title: title || 'Ripple reminder',
         type: calendarManager.EventType.NORMAL,
         startTime: now + 60 * 60 * 1000,
         endTime: now + 2 * 60 * 60 * 1000,

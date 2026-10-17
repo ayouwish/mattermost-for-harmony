@@ -201,7 +201,7 @@ export default class EntryAbility extends RNAbility {
       const notif = parsed?.notification;
       const wrapped = parsed?.payload;
       const wrappedNotif = wrapped?.notification;
-      const title: string = parsed?.title || notif?.title || wrappedNotif?.title || 'Mattermost';
+      const title: string = parsed?.title || notif?.title || wrappedNotif?.title || 'Ripple';
       const text: string = parsed?.message || parsed?.body || wrapped?.message || wrappedNotif?.body || 'New message';
 
       // Try to extract channel_id / post_id for deep-linking to the message.

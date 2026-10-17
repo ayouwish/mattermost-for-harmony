@@ -480,7 +480,7 @@ export default function ChannelListScreen({
       {showHeader && (
         <View style={styles.header}>
           <View style={styles.headerLeft}>
-            <Text style={styles.headerTitle}>Mattermost</Text>
+            <Text style={styles.headerTitle}>Ripple</Text>
             <Text style={styles.headerUser}>@{userName}</Text>
           </View>
           <View style={styles.headerRight}>

@@ -38,6 +38,7 @@ import {theme, changeOpacity} from '../theme/utils';
 import {setActiveChannel, setCurrentUserId} from '../api/notifications';
 import {persistentStorage} from '../api/persistent-storage';
 import {openInBrowser, shareText} from '../utils/openLink';
+import {pickPhoto, pickFile, uploadFile} from '../utils/upload';
 import {openCalendarReminder} from '../utils/reminder';
 import {copyToClipboard} from '../utils/clipboard';
 
@@ -121,6 +122,10 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   const mentionQueryRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  // Pending attachments picked for the next message (file:// URIs + names).
+  const [pendingFiles, setPendingFiles] = useState<Array<{uri: string; name: string}>>([]);
+  // Attachment source menu visibility (photo library / file).
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editingPostId, setEditingPostId] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<DisplayPost | null>(null);
@@ -1082,7 +1087,7 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   // ── Send message ──
   const handleSend = async () => {
     const trimmed = message.trim();
-    if (!trimmed || sending) return;
+    if ((!trimmed && pendingFiles.length === 0) || sending) return;
 
     // Editing mode
     if (editingPostId) {
@@ -1145,12 +1150,26 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
     setReplyTo(null);
 
     try {
+      // Upload pending attachments first (if any) — collect their file ids.
+      let fileIds: string[] | undefined;
+      if (pendingFiles.length > 0) {
+        const serverUrl = client.getServerUrl();
+        const token = client.getToken() || '';
+        const ids: string[] = [];
+        for (const f of pendingFiles) {
+          const id = await uploadFile(serverUrl, token, channel.id, f.uri, f.name);
+          ids.push(id);
+        }
+        fileIds = ids;
+      }
       await client.createPost({
         channel_id: channel.id,
         message: msgContent,
         root_id: replyRootId || undefined,
         pending_post_id: tempId,
+        file_ids: fileIds,
       });
+      setPendingFiles([]);
       // Clear the draft now that the message was sent.
       persistentStorage.delete(draftKey).catch(() => {});
       // The optimistic placeholder is replaced by the real post (matched by
@@ -1534,12 +1553,37 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
     }
   };
 
+  // ── File upload ──
+  const onPickPhoto = async () => {
+    const uris = await pickPhoto(true);
+    if (uris.length === 0) return;
+    const files = uris.map((uri, i) => ({
+      uri,
+      name: `photo_${Date.now()}_${i}.jpg`,
+    }));
+    setPendingFiles((prev) => [...prev, ...files]);
+  };
+
+  const onPickFile = async () => {
+    const uris = await pickFile();
+    if (uris.length === 0) return;
+    const files = uris.map((uri, i) => {
+      const base = uri.split('/').pop() || `file_${i}`;
+      return {uri, name: decodeURIComponent(base) || `file_${i}`};
+    });
+    setPendingFiles((prev) => [...prev, ...files]);
+  };
+
+  const removePendingFile = (idx: number) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== idx));
+  };
+
   const handleShare = async (post: DisplayPost) => {
     setActionPost(null);
     const serverUrl = client.getServerUrl();
     // Share the message text + a permalink to the message.
     const content = `${post.message}\n${serverUrl}/pl/${post.id}`;
-    const ok = await shareText('Mattermost', content);
+    const ok = await shareText('Ripple', content);
     if (!ok) {
       Alert.alert('Share failed', 'Could not open the system share panel.');
     }
@@ -1601,7 +1645,7 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
   const handleRemind = async (post: DisplayPost) => {
     setActionPost(null);
     const snippet = post.message.replace(/\s+/g, ' ').slice(0, 120) || `${post.username}'s message`;
-    const result = await openCalendarReminder('Mattermost reminder', snippet);
+    const result = await openCalendarReminder('Ripple reminder', snippet);
     if (result === 'permission_denied') {
       Alert.alert(
         'Calendar permission needed',
@@ -2205,8 +2249,26 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
         </View>
       )}
 
+      {/* Pending attachments preview */}
+      {pendingFiles.length > 0 && (
+        <View style={styles.pendingFilesBar}>
+          {pendingFiles.map((f, idx) => (
+            <TouchableOpacity key={idx} style={styles.pendingFileChip} onPress={() => removePendingFile(idx)}>
+              <Text style={styles.pendingFileName} numberOfLines={1}>{f.name}</Text>
+              <Text style={styles.pendingFileRemove}>✕</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
       {/* Input */}
       <View style={[styles.inputBar, {paddingBottom: keyboardHeight > 0 ? keyboardHeight : 8}]}>
+        <TouchableOpacity
+          style={styles.attachButton}
+          onPress={() => setShowAttachMenu((v) => !v)}
+          activeOpacity={0.7}>
+          <Text style={styles.attachButtonText}>＋</Text>
+        </TouchableOpacity>
         <TextInput
           style={styles.input}
           placeholder={editingPostId ? 'Edit message...' : 'Type a message...'}
@@ -2217,9 +2279,9 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
           maxLength={4000}
         />
         <TouchableOpacity
-          style={[styles.sendButton, (!message.trim() || sending) && styles.sendButtonDisabled]}
+          style={[styles.sendButton, (!message.trim() && pendingFiles.length === 0 || sending) && styles.sendButtonDisabled]}
           onPress={handleSend}
-          disabled={!message.trim() || sending}>
+          disabled={(!message.trim() && pendingFiles.length === 0) || sending}>
           {sending ? (
             <ActivityIndicator size="small" color="#fff" />
           ) : (
@@ -2227,6 +2289,23 @@ export default function ChatScreen({client, channel, onBack, onShowInfo, onMenu,
           )}
         </TouchableOpacity>
       </View>
+
+      {/* Attachment source menu */}
+      {showAttachMenu && (
+        <View style={styles.attachMenu}>
+          <TouchableOpacity style={styles.attachMenuItem} onPress={() => {setShowAttachMenu(false); onPickPhoto();}}>
+            <Text style={styles.attachMenuIcon}>🖼️</Text>
+            <Text style={styles.attachMenuLabel}>Photo Library</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.attachMenuItem} onPress={() => {setShowAttachMenu(false); onPickFile();}}>
+            <Text style={styles.attachMenuIcon}>📎</Text>
+            <Text style={styles.attachMenuLabel}>File</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.attachMenuItem} onPress={() => setShowAttachMenu(false)}>
+            <Text style={styles.attachMenuLabel}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Long-press actions: right-click-style popup on large screens (the
           sidebar is always visible, so a centered full-width sheet looks out
@@ -2651,6 +2730,72 @@ const styles = StyleSheet.create({
     backgroundColor: theme.centerChannelBg,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: changeOpacity(theme.centerChannelColor, 0.2),
+  },
+  attachButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: changeOpacity(theme.centerChannelColor, 0.08),
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 8,
+    marginBottom: 2,
+  },
+  attachButtonText: {
+    fontSize: 24,
+    color: theme.centerChannelColor,
+    lineHeight: 28,
+  },
+  attachMenu: {
+    backgroundColor: theme.centerChannelBg,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: changeOpacity(theme.centerChannelColor, 0.2),
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  attachMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  attachMenuIcon: {
+    fontSize: 20,
+    width: 32,
+  },
+  attachMenuLabel: {
+    color: theme.centerChannelColor,
+    fontSize: 15,
+    marginLeft: 8,
+  },
+  pendingFilesBar: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: theme.centerChannelBg,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: changeOpacity(theme.centerChannelColor, 0.15),
+  },
+  pendingFileChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: changeOpacity(theme.centerChannelColor, 0.08),
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginRight: 6,
+    marginBottom: 4,
+    maxWidth: 180,
+  },
+  pendingFileName: {
+    color: theme.centerChannelColor,
+    fontSize: 12,
+    flexShrink: 1,
+  },
+  pendingFileRemove: {
+    color: changeOpacity(theme.centerChannelColor, 0.6),
+    fontSize: 12,
+    marginLeft: 6,
   },
   mentionPopup: {
     backgroundColor: theme.centerChannelBg,
